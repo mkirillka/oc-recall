@@ -1,0 +1,20 @@
+# the index, the personal dictionary and anything derived from real sessions
+index.db
+index.db-wal
+index.db-shm
+synonyms.json
+*.sqlite
+*.sqlite3
+
+# runtime and caches
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
+
+# personal notes and local overrides
+*.local.json
+local-notes.md
+.env
+.env.*

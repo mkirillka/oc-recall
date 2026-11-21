@@ -1,0 +1,29 @@
+# oc-recall
+
+Purpose: search past OpenCode sessions by conversation text, locally and offline.
+Language: Python 3.9+, standard library only. No network, no models, no keys.
+
+Install:
+  git clone <repo> ~/.config/opencode/skills/oc-recall && cd $_ && ./install.sh
+
+Setup (first run on a machine):
+  python3 scripts/oc_recall.py --setup        # dirs, dictionary, index, hourly updater
+
+Search:
+  oc-recall "vpn through an intermediate relay"
+  oc-recall -n 10 --json "сколько стоит подписка на модели"
+  oc-recall -d ~/src/project --days 30 "epics for the quarter"
+
+Data stays outside the repository:
+  index      ~/.local/share/oc-recall/index.db
+  dictionary ~/.config/oc-recall/synonyms.json
+  source     ~/.local/share/opencode/opencode.db (read-only)
+
+Files:
+  scripts/oc_recall.py   CLI, indexer, search
+  scripts/agent.py       updater (launchd, systemd timer, cron line)
+  tests/                 68 offline tests + bilingual ranking benchmark
+  references/design.md   measurements and scoring model
+
+Limitations: lexical matching, so a paraphrase with no shared words is not found;
+OpenCode only; the TUI session picker is not replaced.

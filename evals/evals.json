@@ -1,0 +1,81 @@
+{
+  "skill": "oc-recall",
+  "version": "1.0.0",
+  "scenarios": [
+    {
+      "id": "find-session-by-topic",
+      "input": "Где мы обсуждали схему ВПН с промежуточным звеном в России?",
+      "expect": {
+        "runs": "oc-recall \"схема впн промежуточное звено россия\"",
+        "reports": [
+          "session title",
+          "date",
+          "one line of the matched snippet",
+          "the ses_... id"
+        ],
+        "must_not": [
+          "answer from memory without running the search",
+          "invent a session id that is not in the command output"
+        ]
+      }
+    },
+    {
+      "id": "cross-language-query",
+      "input": "Find the session where we set up the VPN relay through an intermediate server",
+      "expect": {
+        "runs": "oc-recall \"vpn relay intermediate server\"",
+        "notes": "the index is bilingual, so an English query finds Russian notes",
+        "must_report_the_same_session_as": "VPN через промежуточный узел"
+      }
+    },
+    {
+      "id": "nothing-found",
+      "input": "Найди, где мы обсуждали настройку квантового телепорта",
+      "expect": {
+        "runs": "oc-recall \"настройка квантового телепорта\"",
+        "reports": "an honest no-result answer",
+        "suggests": [
+          "different wording",
+          "a wider topic",
+          "a technical term instead of a description"
+        ],
+        "must_not": ["invent a plausible session"]
+      }
+    },
+    {
+      "id": "first-run-on-new-machine",
+      "input": "Поставь себе поиск по сессиям",
+      "expect": {
+        "runs": [
+          "git clone <repo> ~/.config/opencode/skills/oc-recall",
+          "./install.sh"
+        ],
+        "creates": [
+          "~/.local/share/oc-recall/index.db",
+          "~/.config/oc-recall/synonyms.json (empty template, mode 600)",
+          "hourly updater job"
+        ],
+        "must_not": [
+          "copy the author's index or dictionary",
+          "write any personal data into the repository"
+        ]
+      }
+    },
+    {
+      "id": "personal-vocabulary",
+      "input": "Добавь, чтобы «кинетик» находился как «роутер»",
+      "expect": {
+        "edits": "~/.config/oc-recall/synonyms.json",
+        "does_not_edit": ["scripts/oc_recall.py", "any file inside the repository"]
+      }
+    },
+    {
+      "id": "stale-index",
+      "input": "Почему свежая сессия не находится?",
+      "expect": {
+        "runs": ["oc-recall --status", "oc-recall --sync"],
+        "explains": "the index is at most 5 minutes old before a search, the updater runs hourly"
+      }
+    }
+  ]
+}
