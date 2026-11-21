@@ -22,7 +22,7 @@ Data stays outside the repository:
 Files:
   scripts/oc_recall.py   CLI, indexer, search
   scripts/agent.py       updater (launchd, systemd timer, cron line)
-  tests/                 68 offline tests + bilingual ranking benchmark
+  tests/                 73 offline tests + bilingual ranking benchmark
   references/design.md   measurements and scoring model
 
 Limitations: lexical matching, so a paraphrase with no shared words is not found;

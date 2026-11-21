@@ -121,7 +121,7 @@ It is created empty on first setup with mode `600` and never leaves your machine
 ## Tests
 
 ```sh
-python3 tests/test_oc_recall.py     # 66 offline tests
+python3 tests/test_oc_recall.py     # 73 offline tests
 python3 tests/test_quality.py       # bilingual ranking benchmark
 ```
 

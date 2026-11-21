@@ -523,6 +523,26 @@ class CliTest(Base):
         self.assertIn("not found", str(ctx.exception))
         self.assertNotIn("Traceback", str(ctx.exception))
 
+    def test_unreadable_source_reports_cause_not_traceback(self):
+        # a file that exists but is not a database: first run used to print a traceback
+        broken = os.path.join(self.tmp.name, "broken.db")
+        with open(broken, "w", encoding="utf-8") as fh:
+            fh.write("this is not a database")
+        oc_recall.SOURCE_DB = broken
+        with self.assertRaises(oc_recall.RecallError) as ctx:
+            oc_recall.sync()
+        message = str(ctx.exception)
+        self.assertIn("cannot read the OpenCode database", message)
+        self.assertIn("reason:", message)
+        self.assertNotIn("Traceback", message)
+
+    def test_source_schema_is_checked_before_indexing(self):
+        empty = os.path.join(self.tmp.name, "empty.db")
+        sqlite3.connect(empty).close()
+        oc_recall.SOURCE_DB = empty
+        with self.assertRaises(sqlite3.Error):
+            oc_recall.sync()
+
     def test_sync_command(self):
         self.assertEqual(self.run_cli(["--sync"]), 0)
         self.assertTrue(os.path.exists(self.index_db))

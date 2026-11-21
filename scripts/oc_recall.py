@@ -549,10 +549,32 @@ def resolve_source(path: str | None = None) -> str:
     return path
 
 
+def open_source(path: str | None = None) -> sqlite3.Connection:
+    """Open the OpenCode database read-only, turning SQLite failures into advice.
+
+    A raw traceback here is useless to the user: the usual causes are a path that is not
+    the database, a file being rewritten by OpenCode at that moment, or missing read
+    permission. Each gets its own sentence.
+    """
+    path = resolve_source(path)
+    try:
+        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=BUSY_TIMEOUT_MS / 1000)
+        # a cheap read proves the file is a usable database, not just an existing path
+        con.execute("select count(*) from sqlite_master").fetchone()
+        return con
+    except sqlite3.DatabaseError as exc:
+        raise RecallError(
+            f"cannot read the OpenCode database: {path}\n"
+            f"reason: {exc}\n"
+            "Check that the file is readable and is not being rewritten right now; "
+            "retry in a moment, or point OPENCODE_DB at the right file."
+        ) from exc
+
+
 def sync(full: bool = False) -> dict:
     """Bring the index up to date. Incremental unless full=True."""
     source_path = resolve_source()
-    src = sqlite3.connect(f"file:{source_path}?mode=ro", uri=True)
+    src = open_source(source_path)
     try:
         dst = connect_index()
         init_schema(dst)
@@ -826,7 +848,7 @@ def cmd_status() -> int:
 def newest_changed_since(timestamp: int) -> int:
     """Count messages newer than the index timestamp; used only for the status hint."""
     try:
-        src = sqlite3.connect(f"file:{resolve_source()}?mode=ro", uri=True)
+        src = open_source()
     except (RecallError, sqlite3.Error):
         return 0
     try:

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.1 — 2026-11-21
+
+### Fixed
+
+- First run on a new machine could end in a raw SQLite traceback ("unable to open
+  database file") when the OpenCode database was unreadable, locked by a checkpoint or
+  not a database at all. It now prints the path, the reason and what to check.
+- The source database is validated on connect, so a wrong `OPENCODE_DB` fails
+  immediately instead of halfway through indexing.
+- Setup validates the environment before creating directories, so a failed setup no
+  longer looks half-done.
+
 ## 1.0.0 — 2026-11-21
 
 First public release.

@@ -121,7 +121,7 @@ oc-recall --open "тетрис в док-панели"
 ## Проверки
 
 ```sh
-python3 tests/test_oc_recall.py     # 66 офлайн-тестов
+python3 tests/test_oc_recall.py     # 73 офлайн-теста
 python3 tests/test_quality.py       # двуязычный замер ранжирования
 ```
 
