@@ -4,9 +4,9 @@
   "scenarios": [
     {
       "id": "find-session-by-topic",
-      "input": "Где мы обсуждали схему ВПН с промежуточным звеном в России?",
+      "input": "Где мы считали бюджет по категориям и норму сбережений?",
       "expect": {
-        "runs": "oc-recall \"схема впн промежуточное звено россия\"",
+        "runs": "oc-recall \"бюджет категории норма сбережений\"",
         "reports": [
           "session title",
           "date",
@@ -21,11 +21,11 @@
     },
     {
       "id": "cross-language-query",
-      "input": "Find the session where we set up the VPN relay through an intermediate server",
+      "input": "Find the session where we picked a hotel with free cancellation",
       "expect": {
-        "runs": "oc-recall \"vpn relay intermediate server\"",
+        "runs": "oc-recall \"hotel free cancellation\"",
         "notes": "the index is bilingual, so an English query finds Russian notes",
-        "must_report_the_same_session_as": "VPN через промежуточный узел"
+        "must_report_the_same_session_as": "отель с бесплатной отменой"
       }
     },
     {
@@ -39,7 +39,9 @@
           "a wider topic",
           "a technical term instead of a description"
         ],
-        "must_not": ["invent a plausible session"]
+        "must_not": [
+          "invent a plausible session"
+        ]
       }
     },
     {
@@ -63,18 +65,35 @@
     },
     {
       "id": "personal-vocabulary",
-      "input": "Добавь, чтобы «кинетик» находился как «роутер»",
+      "input": "Добавь, чтобы сокращение «PX» находилось как «projectx»",
       "expect": {
         "edits": "~/.config/oc-recall/synonyms.json",
-        "does_not_edit": ["scripts/oc_recall.py", "any file inside the repository"]
+        "does_not_edit": [
+          "scripts/oc_recall.py",
+          "any file inside the repository"
+        ]
       }
     },
     {
       "id": "stale-index",
       "input": "Почему свежая сессия не находится?",
       "expect": {
-        "runs": ["oc-recall --status", "oc-recall --sync"],
+        "runs": [
+          "oc-recall --status",
+          "oc-recall --sync"
+        ],
         "explains": "the index is at most 5 minutes old before a search, the updater runs hourly"
+      }
+    },
+    {
+      "id": "paraphrase-without-shared-words",
+      "input": "Найди, где мы обсуждали, что денег в этом месяце в обрез",
+      "expect": {
+        "runs": "oc-recall \"денег в этом месяце в обрез\"",
+        "reports": "either a session about the budget, if the optional embedding mode is on, or an honest no-result",
+        "must_not": [
+          "claim semantic understanding when the embedding mode is off"
+        ]
       }
     }
   ]

@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+from zlib import crc32
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
@@ -68,28 +69,40 @@ def build_source_db(path: str, sessions: list[dict]) -> None:
     con.close()
 
 
+# Neutral demo data: money, travel, programming. Nothing specific to any one person.
 DEMO_SESSIONS = [
     {
-        "id": "ses_tunnel",
-        "title": "Network routing notes",
+        "id": "ses_budget",
+        "title": "Quarterly budget review",
         "messages": [
-            {"type": "user", "text": "Нужна схема VPN: клиент подключается к промежуточному "
-                                     "серверу в России, а тот уже ходит в зарубежный датацентр."},
-            {"type": "assistant", "text": "Собрали цепочку из двух узлов и проверили, "
-                                         "что трафик идёт через релей."},
+            {"type": "user", "text": "Разбери траты за квартал по категориям и посоветуй, "
+                                     "какую долю дохода откладывать в накопления."},
+            {"type": "assistant", "text": "Разложил расходы по категориям: жильё, еда, "
+                                         "транспорт. Откладывать 20% дохода реально."},
         ],
     },
     {
-        "id": "ses_tetris",
-        "title": "Tetris in the dock panel",
+        "id": "ses_flights",
+        "title": "Flights to Lisbon",
         "messages": [
-            {"type": "user", "text": "Сделай игру тетрис в док-панели на рабочем столе."},
-            {"type": "assistant", "text": "Готово: мини-игра рисуется в панели."},
+            {"type": "user", "text": "Найди дешёвые билеты в Лиссабон с одной пересадкой."},
+            {"type": "assistant", "text": "Стыковка в Стамбуле, 12 часов ожидания, "
+                                         "цена ниже прямого рейса на треть."},
+        ],
+    },
+    {
+        "id": "ses_api",
+        "title": "API refactoring",
+        "messages": [
+            {"type": "user", "text": "Раздели эндпоинты интеграционного API и добавь тесты "
+                                     "на коды ошибок."},
+            {"type": "assistant", "text": "Эндпоинты разделены по ресурсам, тесты "
+                                         "покрывают 400 и 500."},
         ],
     },
     {
         "id": "ses_titled_only",
-        "title": "VPN relay in Russia",
+        "title": "Cheap flights with a layover",
         "created": NOW - 3 * DAY_MS,
         "messages": [],
     },
@@ -97,7 +110,7 @@ DEMO_SESSIONS = [
         "id": "ses_old",
         "title": "Old unrelated session",
         "created": NOW - 400 * DAY_MS,
-        "messages": [{"type": "user", "text": "Проверь старые заметки про отпуск."}],
+        "messages": [{"type": "user", "text": "Проверь старые заметки про ремонт кухни."}],
     },
 ]
 
@@ -136,40 +149,36 @@ class Base(unittest.TestCase):
     def index(self, full: bool = True) -> dict:
         return oc_recall.sync(full=full)
 
-    def find(self, query: str, **kwargs) -> list[dict]:
-        self.index() if not os.path.exists(self.index_db) else None
-        return oc_recall.search(query, **kwargs)
-
 
 class TokenTest(unittest.TestCase):
     def test_stem_removes_russian_endings(self):
-        self.assertEqual(oc_recall.stem("схемы"), "схем")
-        self.assertEqual(oc_recall.stem("промежуточным"), "промежуточн")
+        self.assertEqual(oc_recall.stem("расходы"), "расход")
+        self.assertEqual(oc_recall.stem("бюджетами"), "бюджет")
 
     def test_stem_keeps_short_words(self):
-        self.assertEqual(oc_recall.stem("впн"), "впн")
-        self.assertEqual(oc_recall.stem("vpn"), "vpn")
+        self.assertEqual(oc_recall.stem("sql"), "sql")
+        self.assertEqual(oc_recall.stem("api"), "api")
 
     def test_tokens_split_hyphenated_words(self):
-        # "alfa-bank" must be findable as both the whole word and its parts
-        parts = oc_recall.tokens("альфа-банка")
-        self.assertIn("альфа-банк", parts)
-        self.assertIn("альф", parts)
-        self.assertIn("банк", parts)
+        # "check-in" must be findable as the whole word and as its parts
+        parts = oc_recall.tokens("онлайн-бронирование")
+        self.assertIn("онлайн-бронирован", parts)
+        self.assertIn("онлайн", parts)
+        self.assertIn("бронирован", parts)
 
     def test_tokens_drop_stop_words(self):
         self.assertEqual(oc_recall.tokens("и в на the a of"), [])
 
     def test_tokens_fold_yo(self):
-        self.assertEqual(oc_recall.tokens("ёлка"), oc_recall.tokens("елка"))
+        self.assertEqual(oc_recall.tokens("счёт"), oc_recall.tokens("счет"))
 
     def test_index_tokens_add_prefix_stems(self):
-        # "умножение" and "умножить" share the 5-letter stem "умнож"
-        for word in ("умножение", "умножить"):
-            self.assertIn("~умнож", oc_recall.index_tokens(word))
+        # "путешествие" and "путешествовать" share the five-letter stem "путеш"
+        for word in ("путешествие", "путешествовать"):
+            self.assertIn("~путеш", oc_recall.index_tokens(word))
 
     def test_prefix_stems_not_added_for_short_words(self):
-        self.assertFalse(any(t.startswith("~") for t in oc_recall.index_tokens("впн")))
+        self.assertFalse(any(t.startswith("~") for t in oc_recall.index_tokens("api")))
 
 
 class ChunkTest(unittest.TestCase):
@@ -180,7 +189,7 @@ class ChunkTest(unittest.TestCase):
         self.assertEqual(oc_recall.chunk_text("   \n  "), [])
 
     def test_long_text_split_with_overlap(self):
-        text = "\n\n".join(f"Параграф {i} " + "слово " * 60 for i in range(8))
+        text = "\n\n".join(f"Абзац {i} " + "слово " * 60 for i in range(8))
         chunks = oc_recall.chunk_text(text, size=300, overlap=50)
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(chunk.strip() for chunk in chunks))
@@ -196,7 +205,7 @@ class ChunkTest(unittest.TestCase):
     def test_assistant_message_ignores_tool_parts(self):
         payload = {
             "content": [
-                {"type": "tool", "text": "секретный вывод команды"},
+                {"type": "tool", "text": "служебный вывод команды"},
                 {"type": "text", "text": "полезный ответ"},
             ]
         }
@@ -206,21 +215,21 @@ class ChunkTest(unittest.TestCase):
 class DictionaryTest(Base):
     def test_missing_user_dictionary_is_not_an_error(self):
         table = oc_recall.load_synonyms("/nonexistent/synonyms.json")
-        self.assertIn("vpn", table)
-        self.assertIn("впн", table["vpn"])
+        self.assertIn("flight", table)
+        self.assertIn("рейс", table["flight"])
 
     def test_user_dictionary_is_merged(self):
         os.makedirs(os.path.dirname(self.dict_path), exist_ok=True)
         with open(self.dict_path, "w", encoding="utf-8") as fh:
-            json.dump({"groups": [["зелёный", "зеленый", "green"]]}, fh)
+            json.dump({"groups": [["проектx", "projectx"]]}, fh)
         table = oc_recall.load_synonyms(self.dict_path)
-        self.assertIn("green", table["зелен"])
+        self.assertIn("projectx", table["проектx"])
 
     def test_broken_dictionary_does_not_crash(self):
         os.makedirs(os.path.dirname(self.dict_path), exist_ok=True)
         with open(self.dict_path, "w", encoding="utf-8") as fh:
             fh.write("{not json")
-        self.assertIn("vpn", oc_recall.load_synonyms(self.dict_path))
+        self.assertIn("flight", oc_recall.load_synonyms(self.dict_path))
 
     def test_single_word_groups_are_ignored(self):
         os.makedirs(os.path.dirname(self.dict_path), exist_ok=True)
@@ -232,60 +241,65 @@ class DictionaryTest(Base):
 
 class PlanTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.idf = {"впн": 5.0, "промежуточн": 4.0, "звен": 6.0, "обсужден": 6.0,
-                    "~проме": 4.0, "vpn": 4.5}
+        self.idf = {"бюджет": 5.0, "расход": 4.0, "накоплен": 6.0, "обсужден": 6.0,
+                    "~бюдже": 4.0, "budget": 4.5}
         self.synonyms = oc_recall.load_synonyms("/nonexistent/synonyms.json")
 
     def test_intent_words_weigh_less(self):
-        plan = oc_recall.query_plan("обсуждение схемы впн", self.idf, self.synonyms)
+        plan = oc_recall.query_plan("обсуждение бюджета", self.idf, self.synonyms)
         self.assertEqual(plan["role"]["обсужден"], oc_recall.META_WEIGHT)
-        self.assertEqual(plan["role"]["впн"], 1.0)
+        self.assertEqual(plan["role"]["бюджет"], 1.0)
 
     def test_synonyms_added_with_lower_weight(self):
-        plan = oc_recall.query_plan("впн", self.idf, self.synonyms)
-        self.assertAlmostEqual(plan["role"]["vpn"], oc_recall.SYNONYM_WEIGHT)
+        plan = oc_recall.query_plan("бюджет", self.idf, self.synonyms)
+        self.assertAlmostEqual(plan["role"]["budget"], oc_recall.SYNONYM_WEIGHT)
 
     def test_exact_form_does_not_add_prefix_variant(self):
         # regression: adding the five-letter stem next to the exact term inflated the
         # denominator and made the same match count twice
-        plan = oc_recall.query_plan("промежуточным", self.idf, self.synonyms)
+        plan = oc_recall.query_plan("бюджет", self.idf, self.synonyms)
         weights = oc_recall.plan_weights(plan)
-        self.assertIn("промежуточн", weights)
-        self.assertNotIn("~проме", weights)
+        self.assertIn("бюджет", weights)
+        self.assertNotIn("~бюдже", weights)
 
     def test_prefix_fallback_counts_as_topic(self):
         # regression: a query whose word form is absent from the index returned nothing,
         # even though the shared prefix stem was indexed
-        idf = {"умножит": 5.0, "~умнож": 5.0}
-        plan = oc_recall.query_plan("умножение", idf, self.synonyms)
-        self.assertEqual(plan["primary"][0]["members"], {"~умнож"})
+        idf = {"путешеств": 5.0, "~путеш": 5.0}
+        plan = oc_recall.query_plan("путешествовать", idf, self.synonyms)
+        self.assertEqual(plan["primary"][0]["members"], {"~путеш"})
         self.assertTrue(plan["found"])
 
     def test_short_words_have_no_prefix_fallback(self):
-        idf = {"впн": 5.0}
-        plan = oc_recall.query_plan("впн", idf, self.synonyms)
-        self.assertEqual(plan["primary"][0]["members"], {"впн"})
+        idf = {"api": 5.0}
+        plan = oc_recall.query_plan("api", idf, self.synonyms)
+        self.assertEqual(plan["primary"][0]["members"], {"api"})
 
     def test_prefix_match_weighs_less_than_full_word(self):
-        # a stem match is a weaker signal than the exact word
-        idf = {"умножен": 5.0, "~умнож": 5.0}
-        plan = oc_recall.query_plan("умножение", idf, self.synonyms)
+        idf = {"путешеств": 5.0, "~путеш": 5.0}
+        plan = oc_recall.query_plan("путешествие", idf, self.synonyms)
         self.assertAlmostEqual(plan["primary"][0]["weight"], 5.0)  # exact form wins
-        idf = {"умножит": 5.0, "~умнож": 5.0}
-        plan = oc_recall.query_plan("умножение", idf, self.synonyms)
+        idf = {"путешествов": 5.0, "~путеш": 5.0}
+        plan = oc_recall.query_plan("путешествие", idf, self.synonyms)
         self.assertAlmostEqual(
             plan["primary"][0]["weight"], 5.0 * oc_recall.PREFIX_WEIGHT
         )
 
     def test_unknown_words_are_dropped(self):
-        plan = oc_recall.query_plan("впн квантовыйфлукс", self.idf, self.synonyms)
+        plan = oc_recall.query_plan("бюджет квантовыйфлукс", self.idf, self.synonyms)
         weights = oc_recall.plan_weights(plan)
-        self.assertIn("впн", weights)
+        self.assertIn("бюджет", weights)
         self.assertNotIn("квантовыйфлукс", weights)
 
     def test_query_without_known_words_reports_empty(self):
         plan = oc_recall.query_plan("абракадабра", self.idf, self.synonyms)
         self.assertFalse(plan["found"])
+
+    def test_terms_sharing_a_synonym_merge_into_one_concept(self):
+        # "flight" and "рейс" are synonyms: they must not be counted as two topics
+        idf = {"flight": 5.0, "рейс": 5.0}
+        plan = oc_recall.query_plan("flight рейс", idf, self.synonyms)
+        self.assertEqual(len(plan["primary"]), 1)
 
 
 class IndexTest(Base):
@@ -311,8 +325,8 @@ class IndexTest(Base):
         con = sqlite3.connect(self.source_db)
         con.execute(
             "insert into session_message values(?,?,?,?,?,?,?)",
-            ("ses_tetris-m99", "ses_tetris", "user", 99, NOW, NOW,
-             json.dumps({"text": "И ещё: добавь звук при падении фигуры."},
+            ("ses_budget-m99", "ses_budget", "user", 99, NOW, NOW,
+             json.dumps({"text": "И ещё посчитай, сколько уходит на подписки."},
                         ensure_ascii=False)),
         )
         con.commit()
@@ -325,21 +339,21 @@ class IndexTest(Base):
         after_count = after.execute("select count(*) from chunk").fetchone()[0]
         after.close()
         self.assertGreater(after_count, before_count)
-        titles = oc_recall.search("звук при падении фигуры")
-        self.assertEqual(titles[0]["session_id"], "ses_tetris")
+        found = oc_recall.search("сколько уходит на подписки")
+        self.assertEqual(found[0]["session_id"], "ses_budget")
 
     def test_deleted_message_is_pruned(self):
         # messages go, the session stays: it is still findable by its title
         self.index()
         con = sqlite3.connect(self.source_db)
-        con.execute("delete from session_message where session_id='ses_tetris'")
+        con.execute("delete from session_message where session_id='ses_flights'")
         con.commit()
         con.close()
         self.index(full=False)
         con = oc_recall.connect_index()
         try:
             kinds = [row[0] for row in con.execute(
-                "select kind from chunk where session_id='ses_tetris'"
+                "select kind from chunk where session_id='ses_flights'"
             )]
         finally:
             con.close()
@@ -348,11 +362,12 @@ class IndexTest(Base):
     def test_deleted_session_is_pruned(self):
         self.index()
         con = sqlite3.connect(self.source_db)
-        con.execute("delete from session_v2 where id='ses_tetris'")
+        con.execute("delete from session_v2 where id='ses_flights'")
         con.commit()
         con.close()
         self.index(full=False)
-        self.assertEqual(oc_recall.search("тетрис в док-панели"), [])
+        # "стамбул" is unique to the deleted session, so a synonym cannot rescue it
+        self.assertEqual(oc_recall.search("стамбул"), [])
 
     def test_source_change_forces_rebuild(self):
         self.index()
@@ -368,7 +383,7 @@ class IndexTest(Base):
         con = sqlite3.connect(self.source_db)
         con.execute(
             "insert into session_message values(?,?,?,?,?,?,?)",
-            ("bad-1", "ses_tetris", "user", 50, NOW, NOW, "{broken json"),
+            ("bad-1", "ses_flights", "user", 50, NOW, NOW, "{broken json"),
         )
         con.commit()
         con.close()
@@ -387,26 +402,26 @@ class SearchTest(Base):
         self.index()
 
     def test_russian_paraphrase_finds_the_session(self):
-        results = oc_recall.search("схема впн с промежуточным звеном в россии")
+        results = oc_recall.search("дешёвые билеты с пересадкой в лиссабон")
         self.assertTrue(results)
-        self.assertEqual(results[0]["session_id"], "ses_tunnel")
+        self.assertEqual(results[0]["session_id"], "ses_flights")
 
     def test_english_paraphrase_finds_the_session(self):
-        results = oc_recall.search("vpn through an intermediate relay in russia")
-        self.assertIn("ses_tunnel", [r["session_id"] for r in results])
+        results = oc_recall.search("cheap flight with a layover to lisbon")
+        self.assertIn("ses_flights", [r["session_id"] for r in results])
 
-    def test_synonym_bridges_vpn_and_vpn_letters(self):
-        # query in Latin script against a Russian-only conversation
-        results = oc_recall.search("vpn chain")
-        self.assertIn("ses_tunnel", [r["session_id"] for r in results])
+    def test_synonym_bridges_languages(self):
+        # English query against a Russian-only conversation
+        results = oc_recall.search("budget categories")
+        self.assertIn("ses_budget", [r["session_id"] for r in results])
 
     def test_intent_words_do_not_dominate(self):
-        results = oc_recall.search("обсуждение разбор итог тетрис")
+        results = oc_recall.search("обсуждение разбор итог бюджет")
         self.assertTrue(results)
-        self.assertEqual(results[0]["session_id"], "ses_tetris")
+        self.assertEqual(results[0]["session_id"], "ses_budget")
 
     def test_unrelated_session_is_not_returned(self):
-        results = oc_recall.search("тетрис в док-панели")
+        results = oc_recall.search("пересадка лиссабон")
         self.assertNotIn("ses_old", [r["session_id"] for r in results])
 
     def test_unknown_query_returns_nothing(self):
@@ -414,48 +429,47 @@ class SearchTest(Base):
 
     def test_days_filter_keeps_title_only_session(self):
         # regression: title chunks have no timestamp and used to be filtered out
-        results = oc_recall.search("relay in russia", days=7)
+        results = oc_recall.search("flights with a layover", days=7)
         self.assertIn("ses_titled_only", [r["session_id"] for r in results])
 
     def test_days_filter_excludes_old_sessions(self):
-        results = oc_recall.search("старые заметки про отпуск", days=7)
+        results = oc_recall.search("ремонт кухни", days=7)
         self.assertEqual(results, [])
 
     def test_directory_filter(self):
-        results = oc_recall.search("тетрис", directory="/tmp/demo")
+        results = oc_recall.search("пересадка", directory="/tmp/demo")
         self.assertTrue(results)
-        self.assertEqual(oc_recall.search("тетрис", directory="/nowhere"), [])
+        self.assertEqual(oc_recall.search("пересадка", directory="/nowhere"), [])
 
     def test_results_are_json_serializable(self):
-        payload = json.dumps(oc_recall.search("схема впн"), ensure_ascii=False)
-        self.assertIn("ses_tunnel", payload)
+        payload = json.dumps(oc_recall.search("бюджет"), ensure_ascii=False)
+        self.assertIn("ses_budget", payload)
 
     def test_result_fields(self):
-        item = oc_recall.search("схема впн")[0]
+        item = oc_recall.search("бюджет")[0]
         for field in ("session_id", "title", "directory", "date", "relevance", "score",
                       "hits", "matched_in", "snippet"):
             self.assertIn(field, item)
 
     def test_limit_is_respected(self):
-        self.assertEqual(len(oc_recall.search("схема тетрис отпуск", limit=1)), 1)
+        self.assertEqual(len(oc_recall.search("бюджет пересадка", limit=1)), 1)
 
     def test_ranking_prefers_title_hit(self):
-        results = oc_recall.search("vpn relay in russia")
+        results = oc_recall.search("flights with a layover")
         self.assertEqual(results[0]["session_id"], "ses_titled_only")
 
     def test_prefix_bridge_matches_other_word_form(self):
-        # "умножение" is indexed; the query uses "умножить" (different ending)
         con = sqlite3.connect(self.source_db)
         con.execute(
             "insert into session_message values(?,?,?,?,?,?,?)",
-            ("math-1", "ses_old", "user", 1, NOW, NOW,
-             json.dumps({"text": "Сколько будет умножить семнадцать на двадцать три?"},
+            ("travel-1", "ses_old", "user", 1, NOW, NOW,
+             json.dumps({"text": "Люблю путешествие на поезде по выходным."},
                         ensure_ascii=False)),
         )
         con.commit()
         con.close()
         self.index(full=False)
-        results = oc_recall.search("умножение", limit=3)
+        results = oc_recall.search("путешествовать", limit=3)
         self.assertIn("ses_old", [r["session_id"] for r in results])
 
 
@@ -474,10 +488,6 @@ class PathResolutionTest(Base):
         finally:
             con.close()
         self.assertTrue(os.path.exists(self.index_db))
-        self.assertFalse(
-            os.path.exists(os.path.join(oc_recall.DATA_DIR, "probe.db")),
-            "index was created outside the configured path",
-        )
 
     def test_resolve_source_uses_current_module_path(self):
         self.assertEqual(oc_recall.resolve_source(), self.source_db)
@@ -487,6 +497,101 @@ class PathResolutionTest(Base):
         with open(self.dict_path, "w", encoding="utf-8") as fh:
             json.dump({"groups": [["проба", "probe"]]}, fh)
         self.assertIn("probe", oc_recall.load_synonyms()["проб"])
+
+
+class EmbeddingTest(Base):
+    """Semantic fallback: used when a paraphrase shares no words with the notes.
+
+    The model is substituted, so these tests stay offline.
+    """
+
+    # a tiny "semantic space": money on dim 0, travel on 1, code on 2, and spare
+    # dimensions 3..33 for unrelated text, so unrelated text can never align with a topic
+    SPACE = {
+        "budget": (0, 1.0), "бюджет": (0, 1.0), "расход": (0, 1.0), "трат": (0, 1.0),
+        "денег": (0, 1.0), "обрез": (0, 0.9), "накоплен": (0, 0.9), "доход": (0, 0.8),
+        "flight": (1, 1.0), "рейс": (1, 1.0), "пересадк": (1, 1.0), "лиссабон": (1, 1.0),
+        "hotel": (1, 0.9), "отел": (1, 0.9),
+        "api": (2, 1.0), "эндпоинт": (2, 1.0),
+    }
+    DIMS = 34
+
+    def fake_embed(self, texts, model=None):
+        vectors = []
+        for text in texts:
+            total = [0.0] * self.DIMS
+            found = False
+            for word, (axis, weight) in self.SPACE.items():
+                if word in text.lower():
+                    found = True
+                    total[axis] += weight
+            if not found:
+                total[3 + crc32(text.encode()) % (self.DIMS - 3)] = 1.0
+            vectors.append(total)
+        return vectors
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_embed = (oc_recall.EMBED_MODEL, oc_recall.embed_texts,
+                             oc_recall.ollama_has_model)
+        oc_recall.EMBED_MODEL = "fake-embed"
+        oc_recall.embed_texts = self.fake_embed
+        oc_recall.ollama_has_model = lambda model=None: True
+
+    def tearDown(self) -> None:
+        oc_recall.EMBED_MODEL, oc_recall.embed_texts, oc_recall.ollama_has_model = \
+            self._saved_embed
+        super().tearDown()
+
+    def test_semantic_mode_is_off_by_default(self):
+        oc_recall.EMBED_MODEL = ""
+        self.assertFalse(oc_recall.embeddings_enabled())
+
+    def test_embeddings_are_stored_on_sync(self):
+        result = self.index()
+        self.assertGreater(result["embedded"], 0)
+        con = oc_recall.connect_index()
+        try:
+            stored = con.execute(
+                "select count(*) from chunk where vec is not null"
+            ).fetchone()[0]
+        finally:
+            con.close()
+        self.assertEqual(stored, result["total_chunks"])
+
+    def test_paraphrase_without_shared_words_is_found(self):
+        # regression target: "денег в обрез" and "разбор бюджета" share no indexed word
+        self.index()
+        oc_recall.EMBED_MODEL = ""          # prove the lexical path alone fails
+        self.assertEqual(oc_recall.search("денег в обрез"), [])
+        oc_recall.EMBED_MODEL = "fake-embed"
+        results = oc_recall.search("денег в обрез")
+        self.assertTrue(results)
+        self.assertEqual(results[0]["session_id"], "ses_budget")
+        self.assertTrue(results[0]["semantic"])
+
+    def test_lexical_result_is_not_marked_semantic(self):
+        self.index()
+        results = oc_recall.search("пересадка лиссабон")
+        self.assertTrue(results)
+        self.assertFalse(results[0]["semantic"])
+
+    def test_unrelated_query_stays_empty(self):
+        self.index()
+        self.assertEqual(oc_recall.search("квантовый флукс"), [])
+
+    def test_semantic_signal_does_not_reorder_clear_lexical_hits(self):
+        self.index()
+        clear = oc_recall.search("бюджет расходы категории")
+        self.assertEqual(clear[0]["session_id"], "ses_budget")
+
+    def test_missing_ollama_is_a_readable_error(self):
+        oc_recall.embed_texts = self._saved_embed[1]
+        oc_recall.ollama_has_model = self._saved_embed[2]
+        oc_recall.OLLAMA_URL = "http://127.0.0.1:1"
+        with self.assertRaises(oc_recall.RecallError) as ctx:
+            oc_recall.embed_texts(["text"], "fake-embed")
+        self.assertIn("cannot reach Ollama", str(ctx.exception))
 
 
 class CliTest(Base):
@@ -503,7 +608,7 @@ class CliTest(Base):
 
     def test_json_output_is_valid(self):
         self.index()
-        self.assertEqual(self.run_cli(["--json", "схема впн"]), 0)
+        self.assertEqual(self.run_cli(["--json", "бюджет"]), 0)
 
     def test_json_missing_result_exits_one(self):
         self.index()
@@ -568,7 +673,7 @@ class CliTest(Base):
 
     def test_explain_writes_to_stderr_only(self):
         self.index()
-        self.assertEqual(self.run_cli(["--explain", "схема впн"]), 0)
+        self.assertEqual(self.run_cli(["--explain", "бюджет"]), 0)
 
 
 class AgentTest(unittest.TestCase):

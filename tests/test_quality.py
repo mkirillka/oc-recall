@@ -2,7 +2,8 @@
 """Ranking benchmark on a synthetic bilingual corpus: no network, no personal data.
 
 Each case states a query the way a person would phrase it and the session that has to be
-in the top five. Runs against a temporary database created here.
+in the top five. Neutral domains: money, travel, programming. Runs against a temporary
+database created here.
 
 Run: python3 tests/test_quality.py
 """
@@ -27,58 +28,60 @@ from test_oc_recall import build_source_db  # noqa: E402
 NOW = int(time.time() * 1000)
 
 CORPUS = [
-    ("ses_vpn", "Network layout", "en-ru", [
-        ("user", "Нужна схема VPN: клиент подключается к промежуточному серверу в России, "
-                 "а тот уже ходит в зарубежный датацентр."),
-        ("assistant", "Собрали цепочку из двух узлов: входной релей и выходной шлюз. "
-                      "Проверили, что трафик идёт через оба."),
+    ("ses_budget", "Quarterly budget", [
+        ("user", "Разбери траты за квартал по категориям и посоветуй, какую долю дохода "
+                 "откладывать в накопления."),
+        ("assistant", "Расходы разложены по категориям: жильё, еда, транспорт. "
+                      "Норма сбережений — 20% дохода."),
     ]),
-    ("ses_tetris", "Tetris in the dock", "en", [
-        ("user", "Build a small tetris game that renders inside the macOS dock panel."),
-        ("assistant", "Done: the game draws into the dock and keeps score."),
+    ("ses_loan", "Mortgage options", [
+        ("user", "Сравни условия ипотеки в трёх банках и посчитай переплату за 10 лет."),
+        ("assistant", "Переплата ниже у второго банка, но нужен первый взнос 20%."),
     ]),
-    ("ses_mail", "Mailbox setup", "en", [
-        ("user", "Set up the work mailbox with Exchange ActiveSync and check the calendar."),
-        ("assistant", "Mailbox connected, calendar events are readable."),
+    ("ses_flights", "Flights to Lisbon", [
+        ("user", "Найди дешёвые билеты в Лиссабон с одной пересадкой на сентябрь."),
+        ("assistant", "Стыковка в Стамбуле, 12 часов, цена на треть ниже прямого рейса."),
     ]),
-    ("ses_epics", "Quarter epics", "en", [
-        ("user", "Create the Q4 epics from the activity list and link them to business epics."),
-        ("assistant", "Six epics created, each linked to a customer business epic."),
+    ("ses_hotel", "Hotel booking", [
+        ("user", "Подбери отель в центре с бесплатной отменой и завтраком."),
+        ("assistant", "Три варианта с бесплатной отменой до 48 часов, завтрак включён."),
     ]),
-    ("ses_router", "Router audit", "en", [
-        ("user", "Read the router configuration and list the domain groups used for routing."),
-        ("assistant", "Domain groups parsed, routing policies listed."),
+    ("ses_api", "API refactoring", [
+        ("user", "Раздели эндпоинты интеграционного API по ресурсам и добавь тесты "
+                 "на коды ошибок."),
+        ("assistant", "Эндпоинты разделены, тесты покрывают 400 и 500, старые ручки "
+                      "оставлены как deprecated."),
     ]),
-    ("ses_2fa", "Bank 2FA login", "en", [
-        ("user", "The corporate VPN client asks for a one-time code on every login."),
-        ("assistant", "Two-factor authentication is enforced by the gateway policy."),
+    ("ses_db", "Database migration", [
+        ("user", "Напиши миграцию для новой колонки и проверь, что она откатывается."),
+        ("assistant", "Миграция добавлена, откат проверен на копии базы."),
     ]),
-    ("ses_release", "Release calendar", "en", [
-        ("user", "When is the release train cut and when does it roll out to clients?"),
-        ("assistant", "The cut is on Tuesday, rollout starts the next working day."),
+    ("ses_deploy", "Deploy pipeline", [
+        ("user", "Собери пайплайн деплоя: тесты, сборка образа, выкатка на стейдж."),
+        ("assistant", "Пайплайн из трёх шагов, выкатка только после зелёных тестов."),
     ]),
-    ("ses_disk", "External disk", "en", [
-        ("user", "The laptop does not see the external SSD after unmounting."),
-        ("assistant", "The disk sleeps and needs a power cycle before it appears again."),
+    ("ses_visa", "Visa paperwork", [
+        ("user", "Какие документы нужны на визу и сколько ждать ответа?"),
+        ("assistant", "Список из шести документов, срок рассмотрения — две недели."),
     ]),
 ]
 
 CASES = [
     # English query, Russian conversation: the synonym table has to bridge it
-    ("vpn through an intermediate relay in russia", "ses_vpn"),
-    # Russian query, English conversation
-    ("маршрутизация через промежуточный узел", "ses_vpn"),
+    ("cheap flight with a layover in september", "ses_flights"),
+    # Russian query, English title
+    ("пересадка стамбул билеты", "ses_flights"),
     # pure Russian paraphrase
-    ("схема впн с промежуточным звеном", "ses_vpn"),
-    ("игра тетрис в док панели мака", "ses_tetris"),
-    ("почтовый ящик через exchange и календарь", "ses_mail"),
-    ("создать эпики на квартал из списка активностей", "ses_epics"),
-    ("аудит роутера и группы доменов", "ses_router"),
-    ("роутер конфигурация домены", "ses_router"),
-    ("код подтверждения при входе в корпоративный vpn", "ses_2fa"),
-    ("two factor code on login", "ses_2fa"),
-    ("когда отрезка релиза и раскатка на клиентов", "ses_release"),
-    ("внешний диск не виден после отключения", "ses_disk"),
+    ("сколько откладывать от дохода каждый месяц", "ses_budget"),
+    ("категории расходов за квартал", "ses_budget"),
+    ("переплата по ипотеке за десять лет", "ses_loan"),
+    ("отель с отменой и завтраком", "ses_hotel"),
+    ("hotel with free cancellation", "ses_hotel"),
+    ("разделить ручки api и покрыть тестами", "ses_api"),
+    ("миграция базы с откатом", "ses_db"),
+    ("пайплайн сборки и выкатки", "ses_deploy"),
+    ("документы на визу и сроки", "ses_visa"),
+    ("visa documents processing time", "ses_visa"),
 ]
 
 
@@ -97,7 +100,7 @@ class QualityTest(unittest.TestCase):
                     "created": NOW - index * 86_400_000,
                     "messages": [{"type": t, "text": text} for t, text in messages],
                 }
-                for index, (sid, title, _lang, messages) in enumerate(CORPUS)
+                for index, (sid, title, messages) in enumerate(CORPUS)
             ],
         )
         cls._saved = (oc_recall.INDEX_DB, oc_recall.SOURCE_DB, oc_recall.USER_DICT)
@@ -128,14 +131,15 @@ class QualityTest(unittest.TestCase):
         for query, expected in CASES[:4]:
             first = oc_recall.search(query, limit=1)
             self.assertTrue(first, f"no result for {query!r}")
-            self.assertEqual(first[0]["session_id"], expected, f"wrong first result for {query!r}")
+            self.assertEqual(first[0]["session_id"], expected,
+                             f"wrong first result for {query!r}")
 
     def test_no_result_for_unrelated_query(self):
         self.assertEqual(oc_recall.search("квантовый флукс"), [])
 
     def test_both_languages_return_the_same_session(self):
-        english = oc_recall.search("vpn through an intermediate relay", limit=3)
-        russian = oc_recall.search("впн через промежуточное звено", limit=3)
+        english = oc_recall.search("hotel with free cancellation", limit=3)
+        russian = oc_recall.search("отель с бесплатной отменой", limit=3)
         self.assertEqual(english[0]["session_id"], russian[0]["session_id"])
 
 

@@ -10,9 +10,9 @@ Setup (first run on a machine):
   python3 scripts/oc_recall.py --setup        # dirs, dictionary, index, hourly updater
 
 Search:
-  oc-recall "vpn through an intermediate relay"
-  oc-recall -n 10 --json "сколько стоит подписка на модели"
-  oc-recall -d ~/src/project --days 30 "epics for the quarter"
+  oc-recall "cheap flight with a layover"
+  oc-recall -n 10 --json "разбор бюджета по категориям"
+  oc-recall -d ~/src/project --days 30 "refactor the api layer"
 
 Data stays outside the repository:
   index      ~/.local/share/oc-recall/index.db
@@ -25,5 +25,6 @@ Files:
   tests/                 73 offline tests + bilingual ranking benchmark
   references/design.md   measurements and scoring model
 
-Limitations: lexical matching, so a paraphrase with no shared words is not found;
+Limitations: lexical matching by default, so a paraphrase with no shared words needs
+the optional embedding mode;
 OpenCode only; the TUI session picker is not replaced.

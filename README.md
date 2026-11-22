@@ -4,29 +4,29 @@
 
 OpenCode keeps every session in a local SQLite file and lets you filter sessions by title
 only. The title is a three-word label — it rarely contains the words you remember. So when
-you ask "where did we discuss the VPN layout with an intermediate relay in Russia", the
-built-in picker returns nothing, even though the conversation is right there.
+you ask "where did we work out the flight with a layover to Lisbon", the built-in picker
+returns nothing, even though the conversation is right there.
 
 `oc-recall` indexes the conversation text itself and answers that question in under a
 second, offline, with no embedding model and no API key.
 
 ```
-1. [2.85] 2026-11-14 — Network routing notes
-   ~/src/infra
-   ses_04f1c9d2ffe...  (relevance 100%, chunks 6, question)
-   …the client connects to an intermediate relay in Russia, which then reaches …
+1. [2.41] 2026-11-14 — Flights to Lisbon
+   ~/src/travel
+   ses_04f1c9d2ffe...  (relevance 100%, chunks 4, question)
+   …cheapest flight to Lisbon has one layover in Istanbul, a third below the direct …
 ```
 
 ## Features
 
-- **Meaning first.** Russian inflection is stripped, hyphens are split, and a five-letter
-  stem bridges word forms, so `умножение` finds `умножить`.
-- **Bilingual.** A built-in synonym table links English and Russian technical terms:
-  `vpn` ↔ `впн` ↔ `wireguard`, `relay` ↔ `релей`, `router` ↔ `роутер`.
+- **Word forms collapse.** Russian inflection is stripped, hyphens are split, and a
+  five-letter stem bridges the rest, so `путешествие` finds `путешествовать`.
+- **Bilingual.** A built-in synonym table links English and Russian terms:
+  `flight` ↔ `рейс` ↔ `авиабилет`, `layover` ↔ `пересадка`, `budget` ↔ `бюджет`.
 - **Rarity-weighted.** A rare word counts more than a common one, so the topic decides the
   ranking, not the length of the session.
-- **Intent words damped.** "discuss", "find", "plan", «обсуждение», «схема» weigh a quarter
-  of a topic word — otherwise long sessions win on sheer volume.
+- **Intent words damped.** "discuss", "find", "plan", «обсуждение», «разбор» weigh a
+  quarter of a topic word — otherwise long sessions win on sheer volume.
 - **Incremental index.** New and edited messages are re-indexed; deleted ones are dropped.
   Full rebuild of ~7.5k chunks takes ~7 s, incremental update under 1 s.
 - **Nothing to learn.** One command, five results, `--json` for scripts.
@@ -55,10 +55,10 @@ python3 scripts/oc_recall.py --no-agent     # or skip the updater
 ## Quick start
 
 ```sh
-oc-recall "vpn through an intermediate relay"
-oc-recall -n 10 --json "сколько стоит подписка на модели"
-oc-recall -d ~/src/infra --days 30 "epics for the quarter"
-oc-recall --open "tetris in the dock panel"
+oc-recall "cheap flight with a layover"
+oc-recall -n 10 --json "разбор бюджета по категориям"
+oc-recall -d ~/src/travel --days 30 "hotel with free cancellation"
+oc-recall --open "refactor the api layer"
 ```
 
 ## Commands
@@ -89,6 +89,27 @@ Exit codes: `0` found, `1` nothing found, `2` bad usage, `3` environment problem
 | Personal dictionary | `~/.config/oc-recall/synonyms.json` | `OC_RECALL_DICT` |
 | OpenCode database | `~/.local/share/opencode/opencode.db` | `OPENCODE_DB` |
 | Auto-sync threshold | 300 s | `OC_RECALL_AUTO_SYNC` |
+| Semantic mode | off | `OC_RECALL_EMBED_MODEL` |
+| Ollama address | `http://127.0.0.1:11434` | `OC_RECALL_OLLAMA` |
+
+### Optional semantic mode
+
+Word matching is blind to a paraphrase with no shared words. A multilingual embedding model
+covers part of that gap:
+
+```sh
+OC_RECALL_EMBED_MODEL=bge-m3 oc-recall --reindex
+```
+
+The model must be installed in Ollama. Indexing costs ~15 minutes for 7.7k chunks once,
+then ~1 s per update; the index grows by ~30 MB. Hits found purely by meaning are flagged
+`semantic` in the output.
+
+Measured on 104 real sessions: with `bge-m3` the hybrid keeps every lexical hit (8/8) and
+separates noise from real matches (noise cosine ≤ 0.52, real match 0.82). It did **not**
+turn hand-written paraphrases with no shared words into hits — a session mixes topics, so
+one vector per session averages the signal away. Treat it as a foundation, not as a claim
+of full semantic search. Details and the raw numbers: `references/design.md`.
 
 The personal dictionary extends the built-in vocabulary with your own machine names,
 products and project jargon:
@@ -96,9 +117,8 @@ products and project jargon:
 ```json
 {
   "groups": [
-    ["acme", "vpn", "впн"],
-    ["myrouter", "router", "роутер"],
-    ["projectx", "px"]
+    ["projectx", "px"],
+    ["acme", "acme-corp"]
   ]
 }
 ```
@@ -107,9 +127,10 @@ It is created empty on first setup with mode `600` and never leaves your machine
 
 ## Limitations
 
-- **Lexical, not semantic.** A full paraphrase with no shared words ("card payment
-  problems" vs a session about opening an account abroad) will not be found. Local
-  embedding models were measured and performed worse — see `references/design.md`.
+- **Lexical by default.** A full paraphrase with no shared words ("money is tight this
+  month" vs a session titled "budget review") is not found unless the words overlap or a
+  synonym group covers them. See `references/design.md` for the measurements and for the
+  optional embedding mode.
 - **OpenCode only.** The indexer reads the OpenCode database schema; other tools need
   their own adapter.
 - **Russian stemming is heuristic.** Eleven ending groups cover the common cases; exotic

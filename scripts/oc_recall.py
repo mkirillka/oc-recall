@@ -3,7 +3,7 @@
 
 OpenCode's built-in session picker filters on the title only. This tool indexes the
 actual conversation text into a separate SQLite file and answers queries like
-"vpn through an intermediate relay" with the sessions that discussed it.
+"split the budget by category" with the sessions that discussed it.
 
 Everything is local: no network, no models, no API keys. Only the Python standard
 library is used (3.9+).
@@ -16,6 +16,7 @@ OpenCode DB:     $OPENCODE_DB or $XDG_DATA_HOME/opencode/opencode.db
 from __future__ import annotations
 
 import argparse
+import array
 import json
 import math
 import os
@@ -24,6 +25,8 @@ import shutil
 import sqlite3
 import sys
 import time
+import urllib.error
+import urllib.request
 
 APP = "oc-recall"
 
@@ -61,6 +64,17 @@ META_WEIGHT = 0.25
 SYNONYM_WEIGHT = 0.55
 
 PLAN_LIMIT = 25
+
+# Semantic fallback. Lexical scoring is precise but blind to a paraphrase with no shared
+# words ("денег в обрез" vs "разбор бюджета"). A multilingual embedding model covers
+# exactly that gap, so it is used as an additional signal and as a last resort, never as
+# a replacement. Off unless OC_RECALL_EMBED_MODEL names a model present in Ollama.
+EMBED_MODEL = os.environ.get("OC_RECALL_EMBED_MODEL", "").strip()
+OLLAMA_URL = os.environ.get("OC_RECALL_OLLAMA", "http://127.0.0.1:11434")
+EMBED_BATCH = 16
+EMBED_TIMEOUT = 120
+W_SEMANTIC = 0.55       # how much a semantic match can add to the lexical score
+SEMANTIC_MIN = 0.62     # cosine below this is noise, not a signal
 
 RU_STOP = frozenset(
     """и в во не что он на я с со как а то все она так его но да ты к у же вы за бы по
@@ -104,45 +118,65 @@ META_WORDS = frozenset(
     overview review check""".split()
 )
 
-# Generic technical vocabulary only, bilingual on purpose: a query in one language has to
-# find notes written in the other. Names of your own machines, routers, products and
-# projects belong to the user dictionary (see DEFAULT_DICT), never to this file.
+# Generic vocabulary only, bilingual on purpose: a query in one language has to find notes
+# written in the other. Deliberately neutral domains (money, travel, programming) so the
+# examples read as anyone's work. Names of your own machines, products and projects belong
+# to the user dictionary (see DEFAULT_DICT), never to this file.
 SYNONYM_GROUPS = (
-    ("vpn", "впн", "openvpn", "wireguard", "vless", "xray", "shadowsocks", "hysteria"),
-    ("proxy", "прокси"),
-    ("server", "сервер", "vps", "host", "хост", "hosting", "хостинг"),
-    ("tunnel", "туннел"),
-    ("relay", "релей"),
-    ("intermediate", "промежуточн"),
-    ("gateway", "шлюз"),
-    ("node", "узел", "hop", "хоп"),
-    ("datacenter", "датацентр"),
-    ("provider", "провайдер"),
-    ("firewall", "фаервол", "файрвол"),
+    # money
+    ("budget", "бюджет"),
+    ("expense", "расход", "трат"),
+    ("income", "доход", "зарплат"),
+    ("savings", "накоплен", "откладыва"),
+    ("loan", "кредит", "ипотек", "займ"),
+    ("tax", "налог"),
+    ("invoice", "счёт", "счет", "квитанц"),
+    ("payment", "платёж", "платеж", "оплат"),
+    ("price", "цен", "стоимост"),
+    # travel
+    ("flight", "рейс", "авиабилет", "билет", "перелёт", "перелет"),
+    ("layover", "пересадк", "стыковк"),
+    ("hotel", "отел", "гостиниц"),
+    ("trip", "поездк", "путешеств", "отпуск"),
+    ("booking", "бронирован", "бронь"),
+    ("visa", "виз"),
+    ("airport", "аэропорт"),
+    ("train", "поезд"),
+    ("route", "маршрут"),
+    # programming
+    ("function", "функци", "метод"),
+    ("database", "база данных", "бд", "sql"),
+    ("migration", "миграц"),
+    ("endpoint", "эндпоинт", "ручк"),
+    ("request", "запрос"),
+    ("response", "ответ"),
+    ("token", "токен"),
+    ("cache", "кэш", "кеш"),
+    ("queue", "очеред"),
+    ("log", "лог", "журнал"),
+    ("review", "ревью", "обзор"),
+    ("refactor", "рефактор"),
+    ("deploy", "деплой", "выкатк"),
+    # general
+    ("server", "сервер", "хост", "host", "vps"),
     ("mail", "почт", "email", "имейл", "письм", "ящик"),
     ("calendar", "календар", "встреч", "событ"),
     ("task", "задач", "тикет", "ticket", "issue"),
-    ("epic", "эпик"),
-    ("release", "релиз", "раскатк"),
+    ("release", "релиз", "верси", "раскатк"),
     ("model", "модел", "llm", "нейросет"),
     ("disk", "диск", "drive", "ssd", "hdd", "накопител"),
-    ("router", "роутер", "маршрутизатор"),
     ("network", "сеть", "вайфай", "wifi"),
     ("password", "парол", "passwd", "креды", "credential"),
     ("access", "доступ", "права", "permission"),
     ("terminal", "терминал", "консол", "console", "шелл", "shell", "zsh", "bash"),
-    ("dock", "док"),
     ("app", "приложен", "application", "программ", "софт"),
     ("screenshot", "скриншот", "снимок", "скрин"),
     ("audio", "звук", "озвучк", "tts", "голос"),
-    ("system", "систем", "macos", "mac", "мак", "макбук"),
+    ("system", "систем", "macos", "mac"),
     ("document", "документ", "doc", "docs"),
     ("error", "ошибк", "баг", "bug", "сбо", "паден", "fail"),
     ("install", "установ", "постав", "setup"),
     ("test", "проверк", "тест", "аудит", "audit"),
-    ("game", "игр"),
-    ("office", "корп", "corp", "рабоч", "офис"),
-    ("authentication", "аутентификац", "двухфакторн", "2fa", "mfa", "otp", "авторизац"),
     ("script", "скрипт"),
     ("config", "конфиг", "configuration", "конфигурац"),
     ("update", "обновлен", "апдейт", "upgrade"),
@@ -152,7 +186,7 @@ DEFAULT_DICT = {
     "groups": [],
     "note": (
         "Add your own synonym groups here, e.g. "
-        '{"groups": [["acme", "vpn", "впн"], ["myrouter", "router", "роутер"]]}. '
+        '{"groups": [["projectx", "px"], ["acme", "acme-corp"]]}. '
         "This file is personal: keep it out of git."
     ),
 }
@@ -380,7 +414,7 @@ SCHEMA = (
     """create table if not exists chunk(
         id integer primary key, session_id text not null, message_id text,
         kind text not null, ord integer not null default 0, ts integer,
-        text text not null, tok text)""",
+        text text not null, tok text, vec blob)""",
     "create index if not exists chunk_session on chunk(session_id)",
     "create index if not exists chunk_message on chunk(message_id)",
     "create table if not exists df(term text primary key, n integer)",
@@ -401,6 +435,10 @@ def connect_index(path: str | None = None) -> sqlite3.Connection:
 def init_schema(con: sqlite3.Connection) -> None:
     for statement in SCHEMA:
         con.execute(statement)
+    # older indexes predate the optional embeddings column
+    columns = {row[1] for row in con.execute("pragma table_info(chunk)")}
+    if "vec" not in columns:
+        con.execute("alter table chunk add column vec blob")
     con.commit()
 
 
@@ -594,6 +632,7 @@ def sync(full: bool = False) -> dict:
         messages, chunks, newest, unreadable = index_messages(src, dst, since)
         pruned = prune(src, dst)
         terms = rebuild_df(dst)
+        embedded = index_embeddings(dst, quiet=True)
 
         meta_set(dst, "last_updated_ms", max(int(meta_get(dst, "last_updated_ms", 0) or 0), newest))
         meta_set(dst, "source_db", source_path)
@@ -605,7 +644,7 @@ def sync(full: bool = False) -> dict:
         return {
             "sessions": sessions, "titles": titles, "messages": messages,
             "chunks": chunks, "pruned": pruned, "terms": terms, "total_chunks": total,
-            "unreadable": unreadable,
+            "unreadable": unreadable, "embedded": embedded,
         }
     finally:
         src.close()
@@ -639,6 +678,101 @@ def idf_map(con: sqlite3.Connection) -> dict[str, float]:
     }
 
 
+# --------------------------------------------------------------------- embeddings
+
+
+def embeddings_enabled() -> bool:
+    """Semantic fallback is used only when a model is explicitly configured."""
+    return bool(EMBED_MODEL)
+
+
+def ollama_has_model(model: str | None = None) -> bool:
+    """Check the local Ollama for the configured model. Network-free when unavailable."""
+    model = model or EMBED_MODEL
+    if not model:
+        return False
+    try:
+        request = urllib.request.Request(f"{OLLAMA_URL}/api/tags")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            names = [item.get("name", "") for item in json.load(response).get("models", [])]
+    except (urllib.error.URLError, ValueError, OSError):
+        return False
+    short = model.split(":")[0]
+    return any(name == model or name.split(":")[0] == short for name in names)
+
+
+def embed_texts(texts: list[str], model: str | None = None) -> list[list[float]]:
+    """Embed texts locally. Kept a plain function so tests can substitute it."""
+    model = model or EMBED_MODEL
+    if not model:
+        raise RecallError(
+            "semantic mode needs a model: set OC_RECALL_EMBED_MODEL to a model "
+            "installed in Ollama"
+        )
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), EMBED_BATCH):
+        batch = texts[start : start + EMBED_BATCH]
+        payload = json.dumps({"model": model, "input": batch}).encode()
+        request = urllib.request.Request(
+            f"{OLLAMA_URL}/api/embed",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=EMBED_TIMEOUT) as response:
+                vectors.extend(json.load(response)["embeddings"])
+        except (urllib.error.URLError, OSError) as exc:
+            raise RecallError(
+                f"cannot reach Ollama at {OLLAMA_URL}: {exc}\n"
+                "Start it with `ollama serve`, or unset OC_RECALL_EMBED_MODEL to use "
+                "lexical search only."
+            ) from exc
+        except (KeyError, ValueError) as exc:
+            raise RecallError(f"unexpected Ollama response: {exc}") from exc
+    return vectors
+
+
+def pack_vec(values: list[float]) -> bytes:
+    """Normalize and pack a vector so a dot product equals cosine similarity."""
+    norm = math.sqrt(sum(v * v for v in values)) or 1.0
+    return array.array("f", [v / norm for v in values]).tobytes()
+
+
+def unpack_vec(blob: bytes) -> array.array:
+    values = array.array("f")
+    values.frombytes(blob)
+    return values
+
+
+def cosine(left, right) -> float:
+    """Vectors are normalized when packed, so a dot product is the cosine."""
+    return sum(a * b for a, b in zip(left, right))
+
+
+def index_embeddings(con: sqlite3.Connection, quiet: bool = False) -> int:
+    """Embed chunks that have no vector yet. Returns how many were added."""
+    if not embeddings_enabled() or not ollama_has_model():
+        return 0
+    rows = con.execute(
+        "select id, text from chunk where vec is null order by id"
+    ).fetchall()
+    if not rows:
+        return 0
+    added = 0
+    for start in range(0, len(rows), EMBED_BATCH):
+        batch = rows[start : start + EMBED_BATCH]
+        vectors = embed_texts([text for _id, text in batch])
+        con.executemany(
+            "update chunk set vec=? where id=?",
+            [(pack_vec(vector), chunk_id) for (chunk_id, _text), vector in zip(batch, vectors)],
+        )
+        added += len(batch)
+        if not quiet:
+            print(f"  embedded {added}/{len(rows)}", file=sys.stderr, flush=True)
+    con.commit()
+    return added
+
+
 def search(
     query: str,
     limit: int = 5,
@@ -658,14 +792,23 @@ def search(
         if not idf:
             raise RecallError(_empty_index_message())
         plan = query_plan(query, idf, synonyms)
-        if not plan["found"]:
+
+        query_vector = None
+        if embeddings_enabled():
+            has_vectors = con.execute(
+                "select 1 from chunk where vec is not null limit 1"
+            ).fetchone()
+            if has_vectors and ollama_has_model():
+                query_vector = unpack_vec(pack_vec(embed_texts([query])[0]))
+
+        if not plan["found"] and query_vector is None:
             return []
         primary = plan["primary"]
-        denom = plan["denom"]
+        denom = plan["denom"] or 1.0
 
         sql = (
             "select c.session_id, c.kind, c.text, c.tok, "
-            "coalesce(c.ts, s.created) as stamp, s.title, s.directory, s.created "
+            "coalesce(c.ts, s.created) as stamp, s.title, s.directory, s.created, c.vec "
             "from chunk c join session s on s.id = c.session_id where c.tok is not null"
         )
         params: list = []
@@ -677,13 +820,12 @@ def search(
             params.append(int((time.time() - days * 86400) * 1000))
 
         sessions: dict[str, dict] = {}
-        for session_id, kind, text, tok, stamp, title, path, created in con.execute(sql, params):
+        for row in con.execute(sql, params):
+            session_id, kind, text, tok, stamp, title, path, created, vec = row
             words = set(tok.split())
             covered = [c for c in primary if c["members"] & words]
-            if not covered:
-                continue
             covered_ids = {id(c) for c in covered}
-            chunk_cover = sum(c["weight"] for c in covered) / denom
+            chunk_cover = sum(c["weight"] for c in covered) / denom if covered else 0.0
             # synonyms of the covered concepts also count, at their own weight
             side = sum(
                 c["weight"] for c in plan["concepts"]
@@ -691,19 +833,28 @@ def search(
             ) / denom
             local = chunk_cover * KIND_BOOST.get(kind, 1.0) + 0.35 * side
 
+            similarity = 0.0
+            if query_vector is not None and vec:
+                similarity = max(cosine(query_vector, unpack_vec(vec)), 0.0)
+                local += W_SEMANTIC * similarity * KIND_BOOST.get(kind, 1.0)
+
+            if not covered and similarity < SEMANTIC_MIN:
+                continue
+
             record = sessions.get(session_id)
             if record is None:
                 sessions[session_id] = {
                     "session_id": session_id, "title": title, "directory": path,
                     "created": created, "stamp": stamp, "hits": 1,
-                    "covered": {id(c) for c in covered},
+                    "covered": covered_ids,
                     "chunk_cover": chunk_cover, "local": local,
-                    "excerpt": text, "kind": kind,
+                    "similarity": similarity, "excerpt": text, "kind": kind,
                 }
             else:
                 record["hits"] += 1
-                record["covered"].update(id(c) for c in covered)
+                record["covered"].update(covered_ids)
                 record["chunk_cover"] = max(record["chunk_cover"], chunk_cover)
+                record["similarity"] = max(record["similarity"], similarity)
                 if local > record["local"]:
                     record["local"] = local
                     record["excerpt"] = text
@@ -719,9 +870,12 @@ def search(
             c["weight"] for c in primary if id(c) in record["covered"]
         ) / denom
         cover = W_CHUNK * record["chunk_cover"] + W_SESSION * session_cover
-        if cover < MIN_COVERAGE:
+        semantic_only = cover < MIN_COVERAGE and record["similarity"] >= SEMANTIC_MIN
+        if cover < MIN_COVERAGE and not semantic_only:
             continue
         record["cover"] = cover
+        # the flag tells the user the hit came from meaning, not from matching words
+        record["semantic"] = semantic_only
         record["score"] = cover * KIND_BOOST.get(record["kind"], 1.0) + record["local"] * 0.5
         results.append(record)
     results.sort(key=lambda r: r["score"], reverse=True)
@@ -744,6 +898,7 @@ def search(
                 "score": round(record["score"], 2),
                 "hits": record["hits"],
                 "matched_in": record["kind"],
+                "semantic": record.get("semantic", False),
                 "snippet": snippet(record["excerpt"] or "", stems),
             }
         )
@@ -800,7 +955,7 @@ def cmd_setup(install_agent: bool = True, interval: int = 3600) -> int:
     else:
         print("updater:    not installed (run --install-agent to add it)")
     print("")
-    print(f"Try:  {sys.argv[0]} \"vpn through an intermediate relay\"")
+    print(f"Try:  {sys.argv[0]} \"savings rate for the year\"")
     return 0
 
 
@@ -836,6 +991,18 @@ def cmd_status() -> int:
 
     status = agent.agent_status()
     print(f"updater:    {status['message']}")
+
+    con = connect_index()
+    try:
+        embedded = con.execute("select count(*) from chunk where vec is not null").fetchone()[0]
+    finally:
+        con.close()
+    if not embeddings_enabled():
+        print("semantic:   off (set OC_RECALL_EMBED_MODEL to a model in Ollama to enable)")
+    elif embedded:
+        print(f"semantic:   on, {embedded} chunks embedded via {EMBED_MODEL}")
+    else:
+        print(f"semantic:   on but nothing embedded yet — run --reindex")
 
     last_sync = synced
     if last_sync:
@@ -883,9 +1050,9 @@ def build_parser() -> argparse.ArgumentParser:
         description="Search past OpenCode sessions by meaning, not just by title.",
         epilog=(
             "Examples:\n"
-            '  oc-recall "vpn through an intermediate relay"\n'
-            '  oc-recall -n 10 --json "сколько стоит подписка на модели"\n'
-            '  oc-recall -d ~/src/project --days 30 "epics for the quarter"\n'
+            '  oc-recall "cheap flight with a layover"\n'
+            '  oc-recall -n 10 --json "разбор бюджета по категориям"\n'
+            '  oc-recall -d ~/src/project --days 30 "refactor the api layer"\n'
             "  oc-recall --setup\n"
             "  oc-recall --status"
         ),

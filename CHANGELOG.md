@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.1.0 — 2026-11-22
+
+### Added
+
+- Optional semantic mode: set `OC_RECALL_EMBED_MODEL` to an embedding model installed in
+  Ollama, and a cosine signal is added to the lexical score. Hits found purely by meaning
+  are flagged `semantic`. Off by default; no network use when disabled.
+- `OC_RECALL_OLLAMA` to point at a non-default Ollama address.
+- 7 new tests covering the semantic path with a substituted model, so the suite stays
+  offline. 81 tests total.
+- Measured comparison of two multilingual models on 104 real sessions, including the
+  offline route for getting `bge-m3` when the Ollama registry is unreachable
+  (`references/design.md`).
+
+### Changed
+
+- All examples, fixtures and eval scenarios use neutral domains (budget, travel,
+  programming) instead of one person's private projects.
+- The built-in synonym table covers money, travel and general engineering vocabulary.
+- `README.md` and `README.ru.md` state plainly that paraphrases without shared words are
+  not caught by the default lexical mode.
+
 ## 1.0.1 — 2026-11-21
 
 ### Fixed

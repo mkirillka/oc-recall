@@ -1,9 +1,9 @@
 ---
 name: oc-recall
-description: Search past OpenCode sessions by meaning instead of by session title — indexes the actual conversation text locally and answers queries like "vpn through an intermediate relay" or «где обсуждали схему ВПН». Works offline, standard library only, single-file index. Use when the user says "find the session where we discussed…", "where did we talk about…", "which session was about…", "найди сессию про…", "где мы обсуждали…", "в какой сессии было про…", or asks to recall decisions, commands or context from earlier work that the title does not describe.
+description: Search past OpenCode sessions by meaning instead of by session title — indexes the actual conversation text locally and answers queries like "cheap flight with a layover" or «где считали бюджет по категориям». Works offline, standard library only, single-file index. Use when the user says "find the session where we discussed…", "where did we talk about…", "which session was about…", "найди сессию про…", "где мы обсуждали…", "в какой сессии было про…", or asks to recall decisions, commands or context from earlier work that the title does not describe.
 license: MIT
 metadata:
-  version: 1.0.1
+  version: 1.1.0
   updated: 2026-11-21
   type: oneshot
 ---
@@ -23,7 +23,8 @@ builds a separate index of normalized words:
 - Russian inflection is stripped and hyphenated words are split, so word forms match;
 - a five-letter prefix stem bridges forms that stay different after stemming;
 - words are weighted by rarity (IDF), so a rare topic word beats a common one;
-- a synonym table links English and Russian technical terms (vpn/впн, relay/релей);
+- a synonym table links English and Russian terms (flight/рейс, layover/пересадка,
+  budget/бюджет);
 - words that describe the asking, not the topic ("discuss", "find", "plan"), are damped
   to a quarter weight.
 
@@ -38,9 +39,9 @@ locally: no network, no embedding model, no API key.
    the hourly updater. Nothing personal is read from or written to the repository.
 3. **Search.**
    ```sh
-   oc-recall "vpn through an intermediate relay"
-   oc-recall -n 10 --json "сколько стоит подписка на модели"
-   oc-recall -d ~/src/project --days 30 "epics for the quarter"
+   oc-recall "cheap flight with a layover"
+   oc-recall -n 10 --json "разбор бюджета по категориям"
+   oc-recall -d ~/src/project --days 30 "refactor the api layer"
    ```
 4. **Report.** For each hit show title, date, relevance, one line of the snippet and the
    `ses_...` id. To continue a session, run `opencode -s <id>` or offer to open it.
@@ -75,6 +76,11 @@ locally: no network, no embedding model, no API key.
 
 The repository contains code and generic vocabulary only. Add your own machine names,
 products and project jargon to the personal dictionary — not to the code.
+
+Optional semantic mode: `OC_RECALL_EMBED_MODEL=bge-m3 oc-recall --reindex` adds an
+embedding signal for paraphrases that share no words. Off by default. Measured: it keeps
+every lexical hit and separates noise from real matches, but does not yet catch
+hand-written paraphrases with no shared vocabulary — see `references/design.md`.
 
 ## Files
 
