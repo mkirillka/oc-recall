@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1 — 2026-11-22
+
+### Fixed
+
+- `install.sh` still suggested a private-domain example in its final line.
+- CI now fails when a personal topic leaks into docs or fixtures, not only when a path
+  or a credential does.
+
 ## 1.1.0 — 2026-11-22
 
 ### Added

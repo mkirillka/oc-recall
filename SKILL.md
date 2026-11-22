@@ -3,7 +3,7 @@ name: oc-recall
 description: Search past OpenCode sessions by meaning instead of by session title — indexes the actual conversation text locally and answers queries like "cheap flight with a layover" or «где считали бюджет по категориям». Works offline, standard library only, single-file index. Use when the user says "find the session where we discussed…", "where did we talk about…", "which session was about…", "найди сессию про…", "где мы обсуждали…", "в какой сессии было про…", or asks to recall decisions, commands or context from earlier work that the title does not describe.
 license: MIT
 metadata:
-  version: 1.1.0
+  version: 1.1.1
   updated: 2026-11-21
   type: oneshot
 ---

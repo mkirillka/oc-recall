@@ -32,3 +32,12 @@ jobs:
                --include='*.py' --include='*.md' --include='*.sh' --include='*.json' .; then
             echo "personal path or credential found"; exit 1
           fi
+
+      - name: Examples stay on neutral topics
+        run: |
+          # guards against shipping one person's private subjects as documentation
+          if grep -rniE '\b(vpn|впн|amnezia|wireguard|keenetic|matterhorn)\b' \
+               --include='*.py' --include='*.md' --include='*.sh' --include='*.json' \
+               --include='*.txt' . | grep -v '^./.git/'; then
+            echo "a personal topic leaked into the docs or fixtures"; exit 1
+          fi

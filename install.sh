@@ -93,7 +93,7 @@ fi
 python3 "$SRC/scripts/oc_recall.py" "${SETUP_ARGS[@]}"
 
 echo
-echo "Installed. Try: oc-recall \"vpn through an intermediate relay\""
+echo "Installed. Try: oc-recall \"cheap flight with a layover\""
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *) echo "note: $BIN_DIR is not on PATH — call $SHIM directly or add it to PATH" ;;
