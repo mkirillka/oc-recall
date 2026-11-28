@@ -23,7 +23,9 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -65,16 +67,28 @@ SYNONYM_WEIGHT = 0.55
 
 PLAN_LIMIT = 25
 
-# Semantic fallback. Lexical scoring is precise but blind to a paraphrase with no shared
-# words ("денег в обрез" vs "разбор бюджета"). A multilingual embedding model covers
-# exactly that gap, so it is used as an additional signal and as a last resort, never as
-# a replacement. Off unless OC_RECALL_EMBED_MODEL names a model present in Ollama.
+# Second search mode (semantic). Word matching is precise but blind to a paraphrase with
+# no shared words, and completely blind across languages. A multilingual embedding model
+# covers both gaps, so when it is enabled the final score blends the two signals:
+#
+#     score = W_LEX * min(word_cover, 1.5) + W_SEM * max(0, cos - FLOOR) / (1 - FLOOR)
+#
+# Measured on 24 real questions rewritten without their original words (see
+# references/design.md): the blend keeps exact identifiers at rank 1, lifts same-language
+# paraphrase from 8/24 to 13/24 at rank 1, and takes cross-language search from 3/24 to
+# 24/24. Off unless OC_RECALL_EMBED_MODEL or ~/.config/oc-recall/config.json names a model;
+# `--enable-semantic` writes that config for you.
 EMBED_MODEL = os.environ.get("OC_RECALL_EMBED_MODEL", "").strip()
+DEFAULT_SEMANTIC_MODEL = "bge-m3"
+MIRROR_GGUF = ("https://hf-mirror.com/ggml-org/bge-m3-Q8_0-GGUF/resolve/main/"
+               "bge-m3-q8_0.gguf")
 OLLAMA_URL = os.environ.get("OC_RECALL_OLLAMA", "http://127.0.0.1:11434")
 EMBED_BATCH = 16
 EMBED_TIMEOUT = 120
-W_SEMANTIC = 0.55       # how much a semantic match can add to the lexical score
-SEMANTIC_MIN = 0.62     # cosine below this is noise, not a signal
+W_LEXICAL = 0.2         # word-match share of the final score when semantic mode is on
+W_SEMANTIC = 0.8        # meaning share of the final score when semantic mode is on
+SEMANTIC_FLOOR = 0.5    # cosine below this counts as noise, whatever the model says
+SEMANTIC_MIN_CHUNK = 8  # ignore very short chunks (titles) as semantic evidence
 
 RU_STOP = frozenset(
     """и в во не что он на я с со как а то все она так его но да ты к у же вы за бы по
@@ -609,8 +623,12 @@ def open_source(path: str | None = None) -> sqlite3.Connection:
         ) from exc
 
 
-def sync(full: bool = False) -> dict:
-    """Bring the index up to date. Incremental unless full=True."""
+def sync(full: bool = False, embed: bool = True, quiet: bool = True) -> dict:
+    """Bring the index up to date. Incremental unless full=True.
+
+    ``embed=False`` skips vector building, so a caller can show its own progress for the
+    long step instead of letting it run silently inside the sync.
+    """
     source_path = resolve_source()
     src = open_source(source_path)
     try:
@@ -632,7 +650,7 @@ def sync(full: bool = False) -> dict:
         messages, chunks, newest, unreadable = index_messages(src, dst, since)
         pruned = prune(src, dst)
         terms = rebuild_df(dst)
-        embedded = index_embeddings(dst, quiet=True)
+        embedded = index_embeddings(dst, quiet=quiet) if embed else 0
 
         meta_set(dst, "last_updated_ms", max(int(meta_get(dst, "last_updated_ms", 0) or 0), newest))
         meta_set(dst, "source_db", source_path)
@@ -681,14 +699,51 @@ def idf_map(con: sqlite3.Connection) -> dict[str, float]:
 # --------------------------------------------------------------------- embeddings
 
 
+def config_path() -> str:
+    """Settings file location, resolved at call time so CONFIG_DIR overrides apply."""
+    return os.environ.get("OC_RECALL_CONFIG") or os.path.join(CONFIG_DIR, "config.json")
+
+
+def load_config(path: str | None = None) -> dict:
+    """Read the small JSON settings file. A missing or broken file means defaults."""
+    path = path or config_path()
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (FileNotFoundError, OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_config(patch: dict, path: str | None = None) -> str:
+    """Merge a patch into the settings file, writing atomically."""
+    path = path or config_path()
+    data = load_config(path)
+    data.update(patch)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    os.replace(temporary, path)
+    return path
+
+
+def configured_embed_model() -> str:
+    """Model used for semantic mode: environment first, then the settings file."""
+    if EMBED_MODEL:
+        return EMBED_MODEL
+    return str(load_config().get("embed_model") or "")
+
+
 def embeddings_enabled() -> bool:
     """Semantic fallback is used only when a model is explicitly configured."""
-    return bool(EMBED_MODEL)
+    return bool(configured_embed_model())
 
 
 def ollama_has_model(model: str | None = None) -> bool:
     """Check the local Ollama for the configured model. Network-free when unavailable."""
-    model = model or EMBED_MODEL
+    model = model or configured_embed_model()
     if not model:
         return False
     try:
@@ -703,11 +758,11 @@ def ollama_has_model(model: str | None = None) -> bool:
 
 def embed_texts(texts: list[str], model: str | None = None) -> list[list[float]]:
     """Embed texts locally. Kept a plain function so tests can substitute it."""
-    model = model or EMBED_MODEL
+    model = model or configured_embed_model()
     if not model:
         raise RecallError(
-            "semantic mode needs a model: set OC_RECALL_EMBED_MODEL to a model "
-            "installed in Ollama"
+            "semantic mode needs a model: run `oc-recall --enable-semantic`, or set "
+            "OC_RECALL_EMBED_MODEL to a model installed in Ollama"
         )
     vectors: list[list[float]] = []
     for start in range(0, len(texts), EMBED_BATCH):
@@ -724,8 +779,8 @@ def embed_texts(texts: list[str], model: str | None = None) -> list[list[float]]
         except (urllib.error.URLError, OSError) as exc:
             raise RecallError(
                 f"cannot reach Ollama at {OLLAMA_URL}: {exc}\n"
-                "Start it with `ollama serve`, or unset OC_RECALL_EMBED_MODEL to use "
-                "lexical search only."
+                "Start it with `ollama serve`, or run --disable-semantic to use "
+                "word search only."
             ) from exc
         except (KeyError, ValueError) as exc:
             raise RecallError(f"unexpected Ollama response: {exc}") from exc
@@ -766,11 +821,147 @@ def index_embeddings(con: sqlite3.Connection, quiet: bool = False) -> int:
             "update chunk set vec=? where id=?",
             [(pack_vec(vector), chunk_id) for (chunk_id, _text), vector in zip(batch, vectors)],
         )
+        con.commit()   # keep progress if the run is interrupted
         added += len(batch)
         if not quiet:
             print(f"  embedded {added}/{len(rows)}", file=sys.stderr, flush=True)
     con.commit()
     return added
+
+
+def drop_embeddings(con: sqlite3.Connection) -> int:
+    """Remove stored vectors, keeping the lexical index intact."""
+    con.execute("update chunk set vec = null")
+    con.commit()
+    return con.total_changes
+
+
+# ---------------------------------------------------------------- semantic setup
+
+
+def ollama_models() -> list[str]:
+    """Names of the models installed in the local Ollama, empty when it is down."""
+    try:
+        request = urllib.request.Request(f"{OLLAMA_URL}/api/tags")
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return [item.get("name", "") for item in json.load(response).get("models", [])]
+    except (urllib.error.URLError, ValueError, OSError):
+        return []
+
+
+def resolve_installed_name(short: str) -> str | None:
+    """Return the exact tag Ollama uses for a model, or None when it is absent."""
+    for name in ollama_models():
+        if name == short or name.split(":")[0] == short.split(":")[0]:
+            return name
+    return None
+
+
+def pull_model(model: str) -> bool:
+    """Ask Ollama to pull a model. False when the registry is unreachable."""
+    binary = shutil.which("ollama")
+    if not binary:
+        return False
+    try:
+        result = subprocess.run(
+            [binary, "pull", model], capture_output=True, text=True, timeout=1800
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+def download_gguf(url: str, target: str) -> int:
+    """Download a GGUF file with progress on stderr. Returns the byte count."""
+    request = urllib.request.Request(url, headers={"User-Agent": f"{APP}/1"})
+    total = 0
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response, \
+                open(target, "wb") as handle:
+            expected = int(response.headers.get("Content-Length") or 0)
+            while True:
+                block = response.read(1024 * 256)
+                if not block:
+                    break
+                handle.write(block)
+                total += len(block)
+                if expected:
+                    print(f"\r  downloaded {total / 1e6:.0f}/{expected / 1e6:.0f} MB",
+                          end="", file=sys.stderr, flush=True)
+        print("", file=sys.stderr)
+    except (urllib.error.URLError, OSError) as exc:
+        raise RecallError(
+            f"cannot download the model file: {exc}\n"
+            "Retry later, or pull the model manually and run --enable-semantic again."
+        ) from exc
+    return total
+
+
+def create_model_from_gguf(gguf_path: str, name: str) -> bool:
+    """Register a local GGUF file with Ollama as a model."""
+    binary = shutil.which("ollama")
+    if not binary:
+        return False
+    with tempfile.TemporaryDirectory() as workdir:
+        modelfile = os.path.join(workdir, "Modelfile")
+        with open(modelfile, "w", encoding="utf-8") as handle:
+            handle.write(f"FROM {gguf_path}\n")
+        try:
+            result = subprocess.run(
+                [binary, "create", name, "-f", modelfile],
+                capture_output=True, text=True, timeout=900,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return result.returncode == 0
+
+
+def ensure_semantic_model(model: str | None = None, use_mirror: bool = True) -> str:
+    """Return an installed model name, fetching the model when needed.
+
+    Order: already installed, then `ollama pull`, then the Hugging Face mirror. The
+    mirror exists because some networks block the Ollama registry at the TLS handshake
+    while the mirror stays reachable.
+    """
+    if not ollama_models():
+        raise RecallError(
+            f"Ollama is not answering at {OLLAMA_URL}\n"
+            "Start it with `ollama serve` and retry."
+        )
+    short = model or DEFAULT_SEMANTIC_MODEL
+
+    installed = resolve_installed_name(short)
+    if installed:
+        print(f"model:      {installed} (already installed)", flush=True)
+        return installed
+
+    print(f"model:      {short} not installed, asking Ollama to pull it", flush=True)
+    if pull_model(short):
+        name = resolve_installed_name(short) or short
+        print(f"model:      {name} pulled", flush=True)
+        return name
+
+    if not use_mirror:
+        raise RecallError(
+            f"cannot pull {short} and the mirror is disabled.\n"
+            "Install the model manually, then run --enable-semantic again."
+        )
+
+    print("model:      registry unreachable, downloading from the Hugging Face mirror",
+          flush=True)
+    with tempfile.TemporaryDirectory() as workdir:
+        gguf = os.path.join(workdir, "model.gguf")
+        size = download_gguf(MIRROR_GGUF, gguf)
+        print(f"model:      downloaded {size / 1e6:.0f} MB, registering with Ollama", flush=True)
+        created_name = f"{short.split(':')[0]}:mirror"
+        if not create_model_from_gguf(gguf, created_name):
+            raise RecallError(
+                "cannot register the downloaded model with Ollama.\n"
+                "Check `ollama list` and the free disk space, then retry."
+            )
+    name = resolve_installed_name(created_name) or created_name
+    print(f"model:      {name} created from the mirror", flush=True)
+    return name
 
 
 def search(
@@ -834,11 +1025,11 @@ def search(
             local = chunk_cover * KIND_BOOST.get(kind, 1.0) + 0.35 * side
 
             similarity = 0.0
-            if query_vector is not None and vec:
+            if query_vector is not None and vec and len(words) >= SEMANTIC_MIN_CHUNK:
                 similarity = max(cosine(query_vector, unpack_vec(vec)), 0.0)
-                local += W_SEMANTIC * similarity * KIND_BOOST.get(kind, 1.0)
+                local += 0.3 * similarity * KIND_BOOST.get(kind, 1.0)
 
-            if not covered and similarity < SEMANTIC_MIN:
+            if not covered and similarity < SEMANTIC_FLOOR:
                 continue
 
             record = sessions.get(session_id)
@@ -870,13 +1061,24 @@ def search(
             c["weight"] for c in primary if id(c) in record["covered"]
         ) / denom
         cover = W_CHUNK * record["chunk_cover"] + W_SESSION * session_cover
-        semantic_only = cover < MIN_COVERAGE and record["similarity"] >= SEMANTIC_MIN
-        if cover < MIN_COVERAGE and not semantic_only:
-            continue
+
+        if query_vector is None:
+            if cover < MIN_COVERAGE:
+                continue
+            record["score"] = cover * KIND_BOOST.get(record["kind"], 1.0) + record["local"] * 0.5
+            record["semantic"] = False
+        else:
+            # meaning below the floor counts as zero, so noise cannot outrank a word match
+            meaning = max(record["similarity"] - SEMANTIC_FLOOR, 0.0) / (1 - SEMANTIC_FLOOR)
+            if cover < MIN_COVERAGE and meaning <= 0.0:
+                continue
+            record["score"] = (
+                W_LEXICAL * min(cover, 1.5)
+                + W_SEMANTIC * meaning
+                + 0.15 * record["local"] / KIND_BOOST.get(record["kind"], 1.0)
+            )
+            record["semantic"] = cover < MIN_COVERAGE
         record["cover"] = cover
-        # the flag tells the user the hit came from meaning, not from matching words
-        record["semantic"] = semantic_only
-        record["score"] = cover * KIND_BOOST.get(record["kind"], 1.0) + record["local"] * 0.5
         results.append(record)
     results.sort(key=lambda r: r["score"], reverse=True)
     results = results[: max(PLAN_LIMIT, limit)]
@@ -940,11 +1142,14 @@ def cmd_setup(install_agent: bool = True, interval: int = 3600) -> int:
     print(f"index:      {INDEX_DB}")
     print(f"dictionary: {config_path}{' (created)' if created else ''}")
 
+    if embeddings_enabled() and ollama_has_model():
+        print(f"semantic:   on via {configured_embed_model()}, embedding new chunks "
+              "(progress on stderr)", flush=True)
     started = time.time()
-    result = sync(full=not os.path.exists(INDEX_DB))
+    result = sync(full=not os.path.exists(INDEX_DB), quiet=False)
     print(
         f"indexed:    {result['sessions']} sessions, {result['total_chunks']} chunks, "
-        f"{result['terms']} terms ({time.time() - started:.1f}s)"
+        f"{result['terms']} terms ({time.time() - started:.1f}s)", flush=True
     )
     if result["unreadable"]:
         print(f"warning:    {result['unreadable']} unreadable messages skipped")
@@ -956,6 +1161,56 @@ def cmd_setup(install_agent: bool = True, interval: int = 3600) -> int:
         print("updater:    not installed (run --install-agent to add it)")
     print("")
     print(f"Try:  {sys.argv[0]} \"savings rate for the year\"")
+    return 0
+
+
+def cmd_enable_semantic(model: str | None = None, use_mirror: bool = True) -> int:
+    """Turn on the second search mode: ensure the model, save config, build vectors."""
+    name = ensure_semantic_model(model, use_mirror=use_mirror)
+    path = save_config({"embed_model": name})
+    print(f"config:     {path} (embed_model = {name})", flush=True)
+
+    started = time.time()
+    result = sync(full=False, embed=False)
+    print(f"index:      {result['sessions']} sessions, {result['total_chunks']} chunks",
+          flush=True)
+    con = connect_index()
+    try:
+        pending = con.execute("select count(*) from chunk where vec is null").fetchone()[0]
+        if pending:
+            print(f"vectors:    embedding {pending} chunks, this takes a few minutes",
+                  flush=True)
+        embedded = index_embeddings(con, quiet=False)
+        pending = con.execute("select count(*) from chunk where vec is null").fetchone()[0]
+    finally:
+        con.close()
+    print(f"vectors:    {embedded} embedded, {pending} still without a vector, "
+          f"{time.time() - started:.0f}s", flush=True)
+    if pending:
+        print("note:       run --reindex to embed the rest")
+    print("")
+    print("Semantic mode is on. Both signals are blended, words pinning exact matches,",
+          "meaning covering paraphrases and other languages.", flush=True)
+    print("Hits found only by meaning are flagged `semantic` in --json output.", flush=True)
+    print("Turn it off with --disable-semantic.", flush=True)
+    return 0
+
+
+def cmd_disable_semantic(drop_vectors: bool = False) -> int:
+    """Turn the second search mode off, keeping the lexical index."""
+    path = save_config({"embed_model": None})
+    print(f"config:     {path} (embed_model = off)", flush=True)
+    if drop_vectors:
+        con = connect_index()
+        try:
+            init_schema(con)
+            con.execute("update chunk set vec = null")
+            con.commit()
+        finally:
+            con.close()
+        print("vectors:    removed")
+    else:
+        print("vectors:    kept, so re-enabling needs no reindex")
     return 0
 
 
@@ -998,9 +1253,9 @@ def cmd_status() -> int:
     finally:
         con.close()
     if not embeddings_enabled():
-        print("semantic:   off (set OC_RECALL_EMBED_MODEL to a model in Ollama to enable)")
+        print("semantic:   off (run --enable-semantic to add the second search mode)")
     elif embedded:
-        print(f"semantic:   on, {embedded} chunks embedded via {EMBED_MODEL}")
+        print(f"semantic:   on, {embedded} chunks embedded via {configured_embed_model()}")
     else:
         print(f"semantic:   on but nothing embedded yet — run --reindex")
 
@@ -1069,6 +1324,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--status", action="store_true", help="show index state")
     parser.add_argument("--sync", action="store_true", help="bring the index up to date")
     parser.add_argument("--reindex", action="store_true", help="rebuild the index from scratch")
+    parser.add_argument("--enable-semantic", action="store_true",
+                        help="turn on the second search mode: ensure an embedding model, save "
+                             "config, build vectors")
+    parser.add_argument("--disable-semantic", action="store_true",
+                        help="turn the second search mode off")
+    parser.add_argument("--semantic-model", help="model name for --enable-semantic "
+                                                 f"(default: {DEFAULT_SEMANTIC_MODEL})")
+    parser.add_argument("--no-mirror", action="store_true",
+                        help="with --enable-semantic: do not fall back to the model mirror")
+    parser.add_argument("--drop-vectors", action="store_true",
+                        help="with --disable-semantic: also delete stored vectors")
     parser.add_argument("--install-agent", action="store_true", help="install the updater only")
     parser.add_argument("--uninstall-agent", action="store_true", help="remove the updater")
     parser.add_argument("--no-agent", action="store_true", help="with --setup: skip the updater")
@@ -1136,6 +1402,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_setup(install_agent=not args.no_agent, interval=args.interval)
     if args.status:
         return cmd_status()
+    if args.enable_semantic:
+        return cmd_enable_semantic(args.semantic_model, use_mirror=not args.no_mirror)
+    if args.disable_semantic:
+        return cmd_disable_semantic(drop_vectors=args.drop_vectors)
     if args.install_agent:
         print(agent.install_agent(interval=args.interval)["message"])
         return 0

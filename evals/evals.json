@@ -95,6 +95,22 @@
           "claim semantic understanding when the embedding mode is off"
         ]
       }
+    },
+    {
+      "id": "enable-second-search-mode",
+      "input": "Включи, чтобы поиск находил и без общих слов",
+      "expect": {
+        "runs": "oc-recall --enable-semantic",
+        "reports": [
+          "which model was chosen and how it was obtained",
+          "how many chunks were embedded",
+          "how to turn it off"
+        ],
+        "must_not": [
+          "ask the user to set environment variables by hand",
+          "claim that paraphrases without shared words are now solved"
+        ]
+      }
     }
   ]
 }

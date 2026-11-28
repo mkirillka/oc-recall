@@ -3,7 +3,7 @@ name: oc-recall
 description: Search past OpenCode sessions by meaning instead of by session title — indexes the actual conversation text locally and answers queries like "cheap flight with a layover" or «где считали бюджет по категориям». Works offline, standard library only, single-file index. Use when the user says "find the session where we discussed…", "where did we talk about…", "which session was about…", "найди сессию про…", "где мы обсуждали…", "в какой сессии было про…", or asks to recall decisions, commands or context from earlier work that the title does not describe.
 license: MIT
 metadata:
-  version: 1.1.1
+  version: 1.2.0
   updated: 2026-11-21
   type: oneshot
 ---
@@ -60,7 +60,9 @@ locally: no network, no embedding model, no API key.
 | `oc-recall --explain` | show how the query was parsed |
 | `oc-recall --open` | open the best session in OpenCode |
 | `oc-recall --setup` | first-time setup: dirs, dictionary, index, updater |
-| `oc-recall --status` | index state and updater state |
+| `oc-recall --status` | index state, updater state, semantic state |
+| `oc-recall --enable-semantic` | second search mode: ensure an embedding model, save config, build vectors |
+| `oc-recall --disable-semantic` | turn the second mode off (`--drop-vectors` to free space) |
 | `oc-recall --sync` | incremental update |
 | `oc-recall --reindex` | rebuild from scratch |
 | `oc-recall --install-agent` / `--uninstall-agent` | manage the updater |
@@ -77,10 +79,34 @@ locally: no network, no embedding model, no API key.
 The repository contains code and generic vocabulary only. Add your own machine names,
 products and project jargon to the personal dictionary — not to the code.
 
-Optional semantic mode: `OC_RECALL_EMBED_MODEL=bge-m3 oc-recall --reindex` adds an
-embedding signal for paraphrases that share no words. Off by default. Measured: it keeps
-every lexical hit and separates noise from real matches, but does not yet catch
-hand-written paraphrases with no shared vocabulary — see `references/design.md`.
+## Second search mode
+
+Word matching is blind to a paraphrase that shares no words. A multilingual embedding model
+covers part of that gap.
+
+**Rule:** never tell the user to "set up embeddings by hand". Run one command:
+
+```sh
+oc-recall --enable-semantic
+```
+
+It checks Ollama, uses the model if installed, otherwise pulls it, otherwise downloads the
+GGUF from the Hugging Face mirror (the Ollama registry is blocked on some networks) and
+registers it, saves `embed_model` to `~/.config/oc-recall/config.json`, then builds vectors.
+Turn it off with `--disable-semantic`. Full details, manual route and costs:
+`references/semantic.md`.
+
+What it changes, measured on 24 real questions rewritten by a local model:
+
+| Query style | words only | with the second mode |
+|---|---|---|
+| English query over Russian notes | 3/24 first | **24/24 first** |
+| same language, other words | 8/24 first | **13/24 first** (top-5: 11 → 17) |
+| exact identifiers | correct | still correct |
+
+So: enabling it is a large win for notes kept in two languages, a moderate win for
+same-language paraphrase. A paraphrase that changes the frame ("money is tight" vs "budget
+review") is still mostly missed — say so instead of promising full semantic search.
 
 ## Files
 
@@ -92,4 +118,5 @@ hand-written paraphrases with no shared vocabulary — see `references/design.md
 | `tests/test_quality.py` | synthetic bilingual corpus with expected rankings |
 | `evals/evals.json` | behavioural scenarios for the agent |
 | `references/design.md` | why lexical scoring, what was measured |
+| `references/semantic.md` | how to turn on the second mode, mirror route, costs |
 | `install.sh` | symlink install into the OpenCode skills directory |

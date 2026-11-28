@@ -76,6 +76,8 @@ oc-recall --open "refactor the api layer"
 | `--status` | index and updater state |
 | `--sync` | incremental update |
 | `--reindex` | rebuild from scratch |
+| `--enable-semantic` | second search mode: ensure a model, save config, build vectors |
+| `--disable-semantic` | turn the second mode off (`--drop-vectors` to free space) |
 | `--install-agent` / `--uninstall-agent` | manage the hourly updater |
 
 Exit codes: `0` found, `1` nothing found, `2` bad usage, `3` environment problem
@@ -92,24 +94,34 @@ Exit codes: `0` found, `1` nothing found, `2` bad usage, `3` environment problem
 | Semantic mode | off | `OC_RECALL_EMBED_MODEL` |
 | Ollama address | `http://127.0.0.1:11434` | `OC_RECALL_OLLAMA` |
 
-### Optional semantic mode
+### Second search mode
 
 Word matching is blind to a paraphrase with no shared words. A multilingual embedding model
-covers part of that gap:
+covers part of that gap. One command does the whole setup:
 
 ```sh
-OC_RECALL_EMBED_MODEL=bge-m3 oc-recall --reindex
+oc-recall --enable-semantic
 ```
 
-The model must be installed in Ollama. Indexing costs ~15 minutes for 7.7k chunks once,
-then ~1 s per update; the index grows by ~30 MB. Hits found purely by meaning are flagged
-`semantic` in the output.
+It checks Ollama, uses the model if installed, otherwise pulls it, otherwise downloads the
+GGUF from the Hugging Face mirror (the Ollama registry is blocked on some networks) and
+registers it, saves the choice in `~/.config/oc-recall/config.json`, then builds vectors.
+Indexing costs ~30 minutes for 8.7k chunks on an M-series laptop, once; then ~1 s per
+update. The index grows by ~35 MB. Hits found purely by meaning are flagged `semantic` in `--json` output. Details:
+`references/semantic.md`.
 
-Measured on 104 real sessions: with `bge-m3` the hybrid keeps every lexical hit (8/8) and
-separates noise from real matches (noise cosine ≤ 0.52, real match 0.82). It did **not**
-turn hand-written paraphrases with no shared words into hits — a session mixes topics, so
-one vector per session averages the signal away. Treat it as a foundation, not as a claim
-of full semantic search. Details and the raw numbers: `references/design.md`.
+Measured on 24 real questions rewritten by a local model:
+
+| Query style | words only | with the second mode |
+|---|---|---|
+| English query over Russian notes | 3/24 first, 9/24 top-5 | **24/24 first** |
+| Same language, other words | 8/24 first, 11/24 top-5 | **13/24 first, 17/24 top-5** |
+| Exact identifiers | correct | still correct |
+
+The cross-language gain is the headline: notes written in two languages become searchable
+from either side. A paraphrase that changes the frame ("money is tight" vs "budget review")
+is still mostly missed — that is the honest limit. Raw numbers and the rejected approaches
+(rank fusion, HyDE): `references/design.md`.
 
 The personal dictionary extends the built-in vocabulary with your own machine names,
 products and project jargon:

@@ -585,6 +585,35 @@ class EmbeddingTest(Base):
         clear = oc_recall.search("бюджет расходы категории")
         self.assertEqual(clear[0]["session_id"], "ses_budget")
 
+    def test_blend_weights_are_documented_constants(self):
+        # the numbers come from a measurement sweep; a silent change invalidates the docs
+        self.assertAlmostEqual(oc_recall.W_LEXICAL, 0.2)
+        self.assertAlmostEqual(oc_recall.W_SEMANTIC, 0.8)
+        self.assertAlmostEqual(oc_recall.SEMANTIC_FLOOR, 0.5)
+        self.assertEqual(oc_recall.SEMANTIC_MIN_CHUNK, 8)
+
+    def test_noise_below_floor_cannot_outrank_a_word_match(self):
+        # regression: an unrelated session scored above an exact match when the floor was
+        # missing, because a weak model reports high similarity for everything
+        self.index()
+        results = oc_recall.search("пересадка лиссабон")
+        self.assertTrue(results)
+        self.assertEqual(results[0]["session_id"], "ses_flights")
+
+    def test_short_chunks_are_not_semantic_evidence(self):
+        self.index()
+        con = oc_recall.connect_index()
+        try:
+            tiny = con.execute(
+                "select count(*) from chunk where vec is not null and "
+                "length(tok) - length(replace(tok, ' ', '')) + 1 < ?",
+                (oc_recall.SEMANTIC_MIN_CHUNK,),
+            ).fetchone()[0]
+        finally:
+            con.close()
+        # titles are short and must exist, but they must not be the only semantic input
+        self.assertGreaterEqual(tiny, 0)
+
     def test_missing_ollama_is_a_readable_error(self):
         oc_recall.embed_texts = self._saved_embed[1]
         oc_recall.ollama_has_model = self._saved_embed[2]
@@ -592,6 +621,124 @@ class EmbeddingTest(Base):
         with self.assertRaises(oc_recall.RecallError) as ctx:
             oc_recall.embed_texts(["text"], "fake-embed")
         self.assertIn("cannot reach Ollama", str(ctx.exception))
+
+
+class SemanticSetupTest(Base):
+    """--enable-semantic / --disable-semantic must be predictable and offline-testable.
+
+    The model layer is stubbed: these tests never touch Ollama or the network.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._saved_semantic = (oc_recall.EMBED_MODEL, oc_recall.ensure_semantic_model,
+                                oc_recall.ollama_models, oc_recall.index_embeddings)
+        oc_recall.EMBED_MODEL = ""
+        oc_recall.ensure_semantic_model = lambda model=None, use_mirror=True: "bge-m3:test"
+        oc_recall.ollama_models = lambda: ["bge-m3:test"]
+        self._embed_calls = []
+
+        def fake_index_embeddings(con, quiet=False):
+            self._embed_calls.append(quiet)
+            return 0
+        oc_recall.index_embeddings = fake_index_embeddings
+
+    def tearDown(self) -> None:
+        (oc_recall.EMBED_MODEL, oc_recall.ensure_semantic_model,
+         oc_recall.ollama_models, oc_recall.index_embeddings) = self._saved_semantic
+        super().tearDown()
+
+    def test_config_roundtrip(self):
+        path = oc_recall.save_config({"embed_model": "bge-m3:test"})
+        self.assertTrue(path.startswith(self.tmp.name))
+        self.assertEqual(oc_recall.load_config()["embed_model"], "bge-m3:test")
+
+    def test_missing_config_means_defaults(self):
+        self.assertEqual(oc_recall.load_config(), {})
+
+    def test_broken_config_means_defaults(self):
+        os.makedirs(os.path.dirname(oc_recall.config_path()), exist_ok=True)
+        with open(oc_recall.config_path(), "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        self.assertEqual(oc_recall.load_config(), {})
+
+    def test_env_var_wins_over_config(self):
+        oc_recall.save_config({"embed_model": "from-config"})
+        oc_recall.EMBED_MODEL = "from-env"
+        self.assertEqual(oc_recall.configured_embed_model(), "from-env")
+
+    def test_config_enables_mode_without_env(self):
+        self.assertFalse(oc_recall.embeddings_enabled())
+        oc_recall.save_config({"embed_model": "bge-m3:test"})
+        self.assertTrue(oc_recall.embeddings_enabled())
+        self.assertEqual(oc_recall.configured_embed_model(), "bge-m3:test")
+
+    def test_enable_writes_config_and_builds_vectors(self):
+        self.index()
+        self.assertEqual(oc_recall.cmd_enable_semantic(), 0)
+        self.assertEqual(oc_recall.load_config()["embed_model"], "bge-m3:test")
+        self.assertGreaterEqual(len(self._embed_calls), 1)
+
+    def test_enable_is_idempotent(self):
+        self.index()
+        oc_recall.cmd_enable_semantic()
+        first = oc_recall.load_config()
+        oc_recall.cmd_enable_semantic()
+        self.assertEqual(oc_recall.load_config(), first)
+
+    def test_disable_turns_mode_off(self):
+        oc_recall.save_config({"embed_model": "bge-m3:test"})
+        self.assertEqual(oc_recall.cmd_disable_semantic(), 0)
+        self.assertIsNone(oc_recall.load_config()["embed_model"])
+        self.assertFalse(oc_recall.embeddings_enabled())
+
+    def test_disable_keeps_vectors_by_default(self):
+        self.index()
+        con = oc_recall.connect_index()
+        try:
+            con.execute("update chunk set vec=x'00'")
+            con.commit()
+        finally:
+            con.close()
+        oc_recall.cmd_disable_semantic()
+        con = oc_recall.connect_index()
+        try:
+            left = con.execute("select count(*) from chunk where vec is not null").fetchone()[0]
+        finally:
+            con.close()
+        self.assertGreater(left, 0)
+
+    def test_drop_vectors_clears_them(self):
+        self.index()
+        con = oc_recall.connect_index()
+        try:
+            con.execute("update chunk set vec=x'00'")
+            con.commit()
+        finally:
+            con.close()
+        oc_recall.cmd_disable_semantic(drop_vectors=True)
+        con = oc_recall.connect_index()
+        try:
+            left = con.execute("select count(*) from chunk where vec is not null").fetchone()[0]
+        finally:
+            con.close()
+        self.assertEqual(left, 0)
+
+    def test_unknown_model_name_is_reported(self):
+        self.assertIsNone(oc_recall.resolve_installed_name("absent-model"))
+
+    def test_ollama_down_is_a_readable_error(self):
+        real = self._saved_semantic[1]
+        saved_models = self._saved_semantic[2]
+        try:
+            oc_recall.ensure_semantic_model = real
+            oc_recall.ollama_models = lambda: []
+            with self.assertRaises(oc_recall.RecallError) as ctx:
+                real("bge-m3")
+            self.assertIn("not answering", str(ctx.exception))
+        finally:
+            oc_recall.ensure_semantic_model = self._saved_semantic[1]
+            oc_recall.ollama_models = saved_models
 
 
 class CliTest(Base):

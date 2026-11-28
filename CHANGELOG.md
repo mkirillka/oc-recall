@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.2.0 — 2026-11-28
+
+### Added
+
+- `--enable-semantic`: one command turns the second search mode on. It checks Ollama, uses
+  an installed model, otherwise pulls it, otherwise downloads the GGUF from the Hugging Face
+  mirror and registers it, saves the choice and builds vectors. Idempotent, with progress.
+- `--disable-semantic` with `--drop-vectors`, `--semantic-model` and `--no-mirror`.
+- `~/.config/oc-recall/config.json` stores the chosen model, so no environment variable is
+  needed after setup. `OC_RECALL_EMBED_MODEL` still wins when set.
+- `references/semantic.md`: procedure, mirror route, costs, verification, honest limits.
+
+### Changed
+
+- **Semantic scoring is now a blend, not a side signal**: `0.2 × word_cover + 0.8 ×
+  max(0, cosine − 0.5) / 0.5`. Measured on 24 real questions rewritten by a local model:
+  cross-language search goes from 3/24 to 24/24 at rank 1, same-language paraphrase from
+  8/24 to 13/24 (top-5: 11 → 17). Exact identifiers keep ranking first.
+- Very short chunks (under 8 tokens, mostly titles) are ignored as semantic evidence.
+- `--status` reports the semantic state and the model actually in use.
+- SKILL.md and both READMEs describe the one-command setup and the measured numbers.
+
+### Fixed
+
+- `--setup` and `--enable-semantic` ran the embedding step silently, so a first run looked
+  hung for ~15 minutes. Progress now goes to stderr, and the output is unbuffered.
+- Rejected by measurement and recorded in `references/design.md`: reciprocal rank fusion
+  (9–11/24 on cross-language) and HyDE (5/24).
+
+## 1.2.0 — 2026-11-28
+
+### Added
+
+- `--enable-semantic`: one command turns the second search mode on. It checks Ollama, uses
+  an installed model, otherwise pulls it, otherwise downloads the GGUF from the Hugging Face
+  mirror and registers it, saves the choice and builds vectors. Idempotent.
+- `--disable-semantic` with optional `--drop-vectors`, `--semantic-model` and `--no-mirror`.
+- `~/.config/oc-recall/config.json` stores the chosen model, so no environment variable is
+  needed after setup. `OC_RECALL_EMBED_MODEL` still wins when set.
+- `references/semantic.md`: procedure, mirror route, costs, verification, honest limits.
+- 12 tests for the settings file and the enable/disable flow. 93 tests total.
+
+### Changed
+
+- `--status` reports the semantic state and the model actually in use.
+- SKILL.md and both READMEs describe the one-command setup instead of asking for manual
+  environment configuration.
+
 ## 1.1.1 — 2026-11-22
 
 ### Fixed

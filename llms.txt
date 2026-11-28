@@ -25,6 +25,9 @@ Files:
   tests/                 73 offline tests + bilingual ranking benchmark
   references/design.md   measurements and scoring model
 
+Second search mode (semantic): oc-recall --enable-semantic   # ensures model, saves config, builds vectors
+  off by default; ~0.6 GB model, ~30 min first build, +35 MB index; --disable-semantic to turn off
+
 Limitations: lexical matching by default, so a paraphrase with no shared words needs
 the optional embedding mode;
 OpenCode only; the TUI session picker is not replaced.
